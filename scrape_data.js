@@ -41,6 +41,14 @@ async function scrapeData() {
         classList.toArray().forEach(classRow => {
             let classData = {};
             $(classRow).find('td').toArray().forEach((x, i) => {
+                if (i === 4) {
+                    let description_span = $(x).find('span[data-content]');
+                    if (description_span.length > 0) {
+                        classData["details"] = $(description_span[0]).attr('data-content').trim();
+                    } else {
+                        classData["details"] = "";
+                    }
+                }
                 classData[header_items[i]] = $(x).text().trim().replaceAll(/\n {2,}/g, "\n");
             });
             if (classes[classData['CRN']]) {
