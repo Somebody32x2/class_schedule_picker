@@ -9,14 +9,14 @@
     <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.1.0"></script>
     <title>Schedule Picker</title>
 </head>
-<body>
+<body style="overflow-x: clip">
 <div class="w-screen min-h-screen flex flex-col md:flex-row bg-gray-100">
     <div class="bg-gray-50 md:w-7/10" id="main">
         <div class="flex flex-col h-screen m-6 lg:m-10">
             <h1 class="text-4xl font-bold mb-4 text-center">Schedule Picker</h1>
             <input class="p-2 border border-gray-400 rounded mb-4" id="search_bar" placeholder="Search..." type="text">
-            <table class="w-full max-w-md bg-white rounded-lg p-4 table-auto border-collapse " id="results">
-                <thead>
+            <table class="w-full bg-white rounded-lg p-4 table-auto border-collapse " id="results">
+                <thead id="results-header">
                 <tr class="bg-gray-200">
                     <th class="px-4 py-2 border-gray-300 border">Name</th>
                     <th class="px-4 py-2 border-gray-300 border">Time</th>
@@ -41,6 +41,10 @@
                 Course Prefixes
             </h1>
             <div class="collapse_content ml-4" id="prefixes_collapsable">
+                <div class="mb-2">
+                    <button class="border border-gray-400 bg-gray-200 px-2 py-1" id="prefixes_all">All</button>
+                    <button class="border border-gray-400 bg-gray-200 px-2 py-1" id="prefixes_none">None</button>
+                </div>
                 <div>
                     <div class="flex flex-col" id="prefixes_list">
                     </div>
@@ -48,7 +52,8 @@
             </div>
         </div>
         <div class="mt-2">
-            <label> Maximum Course Level: <input id="max_level" class="bg-gray-100 border border-gray-400 rounded-sm ml-2 w-6"
+            <label> Maximum Course Level: <input class="bg-gray-100 border border-gray-400 rounded-sm ml-2 w-6"
+                                                 id="max_level"
                                                  maxlength="1" type="number" value="4">000</label>
         </div>
         <div>
@@ -65,9 +70,14 @@
             </div>
         </div>
         <div class="mt-2">
-            <label> Margin Time: <input id="margin_time"
-                                                 class="bg-gray-100 border border-gray-400 rounded-sm ml-2 w-10"
-                                                 maxlength="1" type="number" value="4"> minutes</label>
+            <label> Margin Time: <input class="bg-gray-100 border border-gray-400 rounded-sm ml-2 w-10"
+                                        id="margin_time"
+                                        maxlength="1" type="number" value="4"> minutes</label>
+        </div>
+        <div class="mt-2">
+            <label> AM/PM Times: <input class=""
+                                        id="dynamic_times"
+                                        maxlength="1" type="checkbox" checked></label>
         </div>
     </div>
 </div>
