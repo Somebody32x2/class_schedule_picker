@@ -310,3 +310,20 @@ function handleCourseButtonPress(e) {
 
     localStorage.setItem("config", btoa(JSON.stringify(config)));
 }
+
+function handleCourseMoreMouseoverChange(e) {
+    let crn = e.target.id.split("_")[1];
+    let on_off = e.type === "mouseover" ? "on" : "off";
+    let more_type = e.target.id.split("_")[0];
+    let course = classes[crn];
+    if (on_off === "on") {
+        let popup = document.getElementById("popup");
+        popup.classList.remove("hidden");
+        popup.innerText = course[more_type === "details" ? "details" : "Notes"];
+    }
+    else {
+        let details = document.getElementById("popup");
+        details.classList.add("hidden");
+        details.innerText = "";
+    }
+}
