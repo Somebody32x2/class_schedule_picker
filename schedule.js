@@ -1,6 +1,6 @@
 // Get classes.json (for website)
 let classes = [];
-let days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+let days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 let config = {
     "max_level": 4,
     "prefixes_open": true,
@@ -25,8 +25,9 @@ let config = {
 }
 let all_prefixes = [];
 let letter_days = {
-    "M": 0, "T": 1, "W": 2, "R": 3, "F": 4
+    "M": 0, "T": 1, "W": 2, "R": 3, "F": 4, "S": 5, "U": 6
 }
+let schedule = [[], [], [], [], [],[], []];
 fetch('./classes.json').then(response => {
     response.json().then(data => {
         classes = data;
@@ -62,11 +63,13 @@ async function propagateWebpage() {
             if (!config.prefixes.includes(prefix) && isAll) {
                 config.prefixes.push(prefix);
             }
-
-            document.getElementById("prefixes_list").innerHTML += `<label><input ${config.prefixes.includes(prefix) ? "checked" : ""}
-                type="checkbox" class="prefix_toggle" id="prefix_toggle_${prefix}"> ${prefix}</label>`
-
         }
+    }
+
+    all_prefixes.sort();
+    for (let prefix of all_prefixes) {
+        document.getElementById("prefixes_list").innerHTML += `<label><input ${config.prefixes.includes(prefix) ? "checked" : ""}
+                type="checkbox" class="prefix_toggle" id="prefix_toggle_${prefix}"> ${prefix}</label>`
     }
 
     // Load the rest of the config
@@ -112,9 +115,13 @@ async function propagateWebpage() {
 
     document.getElementById("dynamic_times").addEventListener("click", handleValueChange);
 
+    // Add the current config time values to the occupied times
+    calculateSchedule();
+
+
     // Render the table header
     let th = document.getElementById("results-header");
-    let header_elements = ["★","+", "-", ...Object.keys(classes[Object.keys(classes)[0]])].filter(key => key !== "details").map(key => {
+    let header_elements = ["★", "+", "-", ...Object.keys(classes[Object.keys(classes)[0]])].filter(key => key !== "details").map(key => {
         return `<th class="px-4 py-2 border-gray-300 border">${key === "Notes" ? "More" : key}</th>`;
     });
     th.innerHTML = `<tr class="bg-gray-200">${header_elements.join("")}</tr>`;
@@ -132,6 +139,9 @@ function handleValueChange(e) {
     let id = e.target.id;
     config[id] = value;
     localStorage.setItem("config", btoa(JSON.stringify(config)));
+    if (id.startsWith("schedule_exclude_")) {
+        calculateSchedule();
+    }
     refreshResults()
 }
 
@@ -192,6 +202,36 @@ function refreshResults() {
     result_classes = Object.values(classes).filter(course => !config.course_excludes.includes(course["CRN"]))
         .filter(course => !(Number.parseInt(course["Course"].split(" ")[1][0]) > config.max_level))
         .filter(course => config.prefixes.includes(course["Course"].split(" ")[0]))
+        .filter(course => {
+            // Check if the course is in the schedule
+            return !schedule.some(day => {
+                day.some(event => {
+                    return event.id === course["Course"]
+                })
+            })
+        }).filter(course => {
+            if (course["Days"].length===0 || course["Times"].length === 0) return true;
+            // Check if the course conflicts with the schedule
+            let day_blocks = course["Days"].split("\n"); // M, MW
+            let time_blocks = course["Times"].split("\n").map(x => [...x.split("-")]); // 10:00-11:00, 12:00-13:00
+            for (let i = 0; i < day_blocks.length; i++) {
+                // Check if any time for each day it occurs is between schedule occupied times
+                // Parse this time block
+                let pretime = +time_blocks[i][0].slice(0, 2) * 60 + +time_blocks[i][0].slice(2);
+                let posttime = +time_blocks[i][1].slice(0, 2) * 60 + +time_blocks[i][1].slice(2);
+                // Check if any of the schedule times overlap with this time block for each day this class meets
+
+                for (let d of day_blocks[i].split("")) {
+                    console.log(schedule[letter_days[d]], d,);
+                    if (schedule[letter_days[d]].some(event => {
+                        return (event.start - config.margin_time <= pretime && pretime <= event.end + config.margin_time || event.start - config.margin_time <= posttime && posttime <= event.end + config.margin_time)
+                    })) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        })
 
     console.log(result_classes.length, "Filtered classes");
 
@@ -200,9 +240,7 @@ function refreshResults() {
     // Perform search
     if (config.search_bar.length > 0) {
         const fuse = new Fuse(result_classes, {
-            keys: ["Course", "Title", "Instructor"],
-            minMatchCharLength: 2,
-            threshold: 0.3,
+            keys: ["Course", "Title", "Instructor"], minMatchCharLength: 2, threshold: 0.3,
         })
         search_results = fuse.search(config.search_bar);
         console.log(search_results.length, "Search results");
@@ -227,9 +265,9 @@ function refreshResults() {
             if (key === "details") continue;
             if (key === "Notes") {
                 rowHTML += `<td class="px-4 py-2 border-gray-300 border">
-                <a class="details_btn" id="details_${course["CRN"]}"><img width="25" height="25" src="https://img.icons8.com/ios/100/info--v1.png" alt="info--v1"/></a>`;
+                <a class="details_btn" id="details_${course["CRN"]}"><div class="tooltip"><img width="25" height="25" src="https://img.icons8.com/ios/100/info--v1.png" alt="info--v1"/><p class="tooltiptext w-80">${course["details"]}</p></div></a>`;
                 if (value.length > 0) {
-                    rowHTML += `<a class="notes_btn mt-2" id="notes_${course["CRN"]}"><img width="25" height="25" src="https://img.icons8.com/material-outlined/24/note.png" alt="note"/></a>`
+                    rowHTML += `<a class="notes_btn mt-2" id="notes_${course["CRN"]}"><div class="tooltip"><img width="25" height="25" src="https://img.icons8.com/material-outlined/24/note.png" alt="note"/><p class="tooltiptext">${course["Notes"]}</p> </div> </a>`
                 }
                 continue;
             }
@@ -265,11 +303,20 @@ function refreshResults() {
                     }
                 }
             }
-            rowHTML += `<td class="px-4 py-2 border-gray-300 border">${value.replaceAll("\n", "<br>").replaceAll("-", key==="Times" ? "&#8209;" : "-")}</td>`;
+            rowHTML += `<td class="px-4 py-2 border-gray-300 border">${value.replaceAll("\n", "<br>").replaceAll("-", key === "Times" ? "&#8209;" : "-")}</td>`;
         }
         rowHTML += `</tr>`;
         results.innerHTML += rowHTML;
 
+    }
+
+    let courses_list = document.getElementById("courses_list");
+    courses_list.innerHTML = "";
+    for (let course of config.courses) {
+        let course_data = classes[+course];
+        courses_list.innerHTML += `<li class="text-gray-800 font-bold">
+${course_data["Course"]} - ${course_data["Title"]} <button class="remove_course_btn text-red-500 font-bold hover:font-extrabold" onclick="handleCourseButtonPress({target:{id:'delete_course_${course_data["CRN"]}'}})" >X</button></li>`;
+        console.log(course_data["Course"]);
     }
 
     // Add event listeners to the buttons
@@ -283,17 +330,28 @@ function handleCourseButtonPress(e) {
     let type = e.target.id.split("_")[0];
     let crn = e.target.id.split("_")[2];
 
+    console.log(type, crn);
+
     switch (type) {
         case "add":
             if (!config.courses.includes(crn)) {
                 config.courses.push(crn);
             }
+            calculateSchedule();
+            refreshResults();
+            break;
+        case "delete":
+            if (config.courses.includes(crn)) {
+                config.courses = config.courses.filter(c => c !== crn);
+            }
+            calculateSchedule();
             refreshResults();
             break;
         case "remove":
             if (!config.course_excludes.includes(crn)) {
                 config.course_excludes.push(crn);
             }
+            calculateSchedule();
             refreshResults();
             break;
         case "star":
@@ -320,10 +378,40 @@ function handleCourseMoreMouseoverChange(e) {
         let popup = document.getElementById("popup");
         popup.classList.remove("hidden");
         popup.innerText = course[more_type === "details" ? "details" : "Notes"];
-    }
-    else {
+    } else {
         let details = document.getElementById("popup");
         details.classList.add("hidden");
         details.innerText = "";
+    }
+}
+
+function calculateSchedule() {
+    schedule = [[], [], [], [], [], [], []];
+    for (let i = 0; i < 5; i++) {
+        let pre_time = config[`schedule_exclude_${i}_pre`].split(":").map(x => Number.parseInt(x));
+        let post_time = config[`schedule_exclude_${i}_post`].split(":").map(x => Number.parseInt(x));
+        schedule[i].push({
+            start: pre_time[0] * 60 + pre_time[1],
+            end: post_time[0] * 60 + post_time[1],
+            name: "Schedule Exclude",
+            id: "schedule_exclude"
+        });
+    }
+    for (let course of config.courses) {
+        let course_data = classes[course];
+        let day_blocks = course_data["Days"].split("\n"); // M, MW
+        let time_blocks = course_data["Times"].split("\n").map(x => [x.split("-")[0].trim(), x.split("-")[1].trim()]); // 10:00-11:00, 12:00-13:00
+        for (let i = 0; i < day_blocks.length; i++) {
+            // Check if any time for each day it occurs is between schedule occupied times
+            // Parse this time block
+            let pretime = +time_blocks[i][0].slice(0, 2) * 60 + +time_blocks[i][0].slice(2);
+            let posttime = +time_blocks[i][1].slice(0, 2) * 60 + +time_blocks[i][1].slice(2);
+            // Add the time blocks to the schedule
+            for (let d of day_blocks[i].split("")) {
+                schedule[letter_days[d]].push({
+                    start: pretime, end: posttime, name: course_data["Course"], id: course_data["Course"]
+                });
+            }
+        }
     }
 }

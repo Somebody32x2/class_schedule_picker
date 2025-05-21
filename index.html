@@ -15,7 +15,7 @@
         <div class="flex flex-col h-screen m-6 lg:m-10">
             <h1 class="text-4xl font-bold mb-4 text-center">Schedule Picker</h1>
             <input class="p-2 border border-gray-400 rounded mb-4" id="search_bar" placeholder="Search..." type="text">
-            <table class="w-full bg-white rounded-lg p-4 table-auto border-collapse " id="results">
+            <table class="w-full bg-white rounded-lg p-4 table-auto border-collapse overflow-scroll overflow-x-scroll" id="results">
                 <thead id="results-header">
                 <tr class="bg-gray-200">
                     <th class="px-4 py-2 border-gray-300 border">Name</th>
@@ -79,6 +79,13 @@
                                         id="dynamic_times"
                                         maxlength="1" type="checkbox" checked></label>
         </div>
+        <div class="mt-2">
+            <p>Courses</p>
+            <ul id="courses_list">
+
+            </ul>
+        </div>
+
     </div>
 </div>
 </body>
@@ -93,7 +100,6 @@
     /* Tooltip text */
     .tooltip .tooltiptext {
         visibility: hidden;
-        width: 120px;
         background-color: black;
         color: #fff;
         text-align: center;
