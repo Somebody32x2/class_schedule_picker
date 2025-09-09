@@ -1,5 +1,4 @@
 node_modules
 page_cache/*
 .env
-classes.json
 .idea
