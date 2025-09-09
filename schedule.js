@@ -293,14 +293,7 @@ function refreshResults() {
                 console.log("dyn cap", value.split("/").length === 2);
                 let [enrolled, cap] = value.split("/").map(v => Number.parseInt(v.trim()));
                 if (!isNaN(cap) && !isNaN(enrolled) && cap > 0) {
-                    let percent = Math.floor((enrolled / cap) * 100);
-                    if (percent >= 100) {
-                        value = `<span class="text-red-900 font-bold">${value}</span>`;
-                    } else if (percent > 75) {
-                        value = `<span class="text-yellow-900 font-bold">${value}</span>`;
-                    } else {
-                        value = `<span class="text-green-900 font-bold">${value}</span>`;
-                    }
+                    value = `?/${cap}`
                 }
             }
             rowHTML += `<td class="px-4 py-2 border-gray-300 border">${value.replaceAll("\n", "<br>").replaceAll("-", key === "Times" ? "&#8209;" : "-")}</td>`;
