@@ -1,0 +1,17 @@
+{
+  "_README": "Map a course prefix to its full name (shown on hover) and optional synonyms (also matched by the prefix search). Keys starting with '_' are ignored. Replace/extend this file with your institution's real prefixes.",
+  "_EXAMPLE": { "name": "Computer Science", "synonyms": ["Computing", "Software Engineering"] },
+
+  "CSE": { "name": "Computer Science", "synonyms": ["Computing", "Software", "Software Engineering"] },
+  "CHM": { "name": "Chemistry" },
+  "PHY": { "name": "Physics" },
+  "BIO": { "name": "Biology", "synonyms": ["Life Science"] },
+  "MTH": { "name": "Mathematics", "synonyms": ["Math", "Maths"] },
+  "PSY": { "name": "Psychology" },
+  "COM": { "name": "Communication" },
+  "BUS": { "name": "Business" },
+  "AEE": { "name": "Aerospace Engineering", "synonyms": ["Aero"] },
+  "CVE": { "name": "Civil Engineering" },
+  "OCE": { "name": "Ocean Engineering" },
+  "OCN": { "name": "Oceanography" }
+}
