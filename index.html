@@ -282,14 +282,19 @@
         </section>
     </main>
 
-    <footer class="mx-auto w-full max-w-[1600px] px-2 sm:px-4 py-4 text-xs text-slate-400 dark:text-slate-600">
+    <footer class="mx-auto w-full max-w-[1600px] px-2 sm:px-4 py-4 text-xs text-slate-400 dark:text-slate-600 flex items-center gap-3">
         <a class="hover:text-slate-600 dark:hover:text-slate-400 transition-colors" href="./attribution.html">Attributions</a>
+        <span class="h-3 w-px bg-slate-200 dark:bg-slate-800"></span>
+        <button class="hover:text-slate-600 dark:hover:text-slate-400 transition-colors" id="export_data_btn" type="button" title="Export saved local data as a base64 transfer file">Export data</button>
+        <button class="hover:text-slate-600 dark:hover:text-slate-400 transition-colors" id="import_data_btn" type="button" title="Import saved local data from a base64 transfer file">Import data</button>
+        <input class="hidden" id="import_data_file" type="file" accept=".txt,text/plain">
+        <span class="text-slate-300 dark:text-slate-700" id="export_data_status" aria-live="polite"></span>
     </footer>
 </div>
 
 <!-- JS-positioned tooltip -->
 <div id="floating-tip" class="rounded-lg bg-slate-900 dark:bg-slate-700 text-slate-50 text-xs leading-relaxed px-3 py-2 shadow-lg ring-1 ring-black/5"></div>
 
-<script src="schedule.js?v=20260629c"></script>
+<script src="schedule.js?v=20260630a"></script>
 </body>
 </html>

@@ -63,6 +63,7 @@ let schedule = [[], [], [], [], [], [], []];
 // Transient flags so a freshly added/starred item animates once on the next render.
 let justAddedCrn = null;
 let justStarredCrn = null;
+let calendarActionCrn = null;
 
 // Tooltip state: whether Shift is currently held, and the element the cursor is
 // over, so a Shift press/release can live-swap the tooltip text while hovering.
@@ -155,6 +156,8 @@ function termSortKey(slug) {
 // --------------------------------------------------------------------------
 
 function saveConfig() {
+    sortSavedCourses();
+    sortStarredCourses();
     syncWorkspace();
     localStorage.setItem("config", btoa(unescape(encodeURIComponent(JSON.stringify(config)))));
 }
@@ -346,6 +349,11 @@ async function propagateWebpage() {
     document.getElementById("prefixes_all").addEventListener("click", handlePrefixAllNone);
     document.getElementById("prefixes_none").addEventListener("click", handlePrefixAllNone);
     document.getElementById("theme_toggle").addEventListener("click", toggleTheme);
+    document.getElementById("export_data_btn").addEventListener("click", exportLocalData);
+    document.getElementById("import_data_btn").addEventListener("click", () => {
+        document.getElementById("import_data_file").click();
+    });
+    document.getElementById("import_data_file").addEventListener("change", importLocalData);
 
     for (let i = 0; i < WEEKDAYS; i++) {
         document.getElementById(`schedule_exclude_${i}_pre`).addEventListener("input", handleValueChange);
@@ -400,6 +408,13 @@ async function propagateWebpage() {
         if (!menu.contains(e.target) && !document.getElementById("exclusions_btn").contains(e.target)) {
             menu.classList.add("hidden");
             document.getElementById("exclusions_btn").setAttribute("aria-expanded", "false");
+        }
+    });
+    document.addEventListener("click", e => {
+        const menu = document.getElementById("calendar_action_menu");
+        if (!menu || menu.classList.contains("hidden")) return;
+        if (!menu.contains(e.target) && !closestEl(e.target, ".calendar_action_block")) {
+            hideCalendarActionMenu();
         }
     });
 
@@ -814,6 +829,7 @@ function restoreSchedulePreset(idx) {
     const p = (config.schedule_presets || [])[idx];
     if (!p) return;
     config.courses = p.courses.slice();
+    sortSavedCourses();
     config.show_conflict_crns = (p.show_conflict_crns || []).slice();
     saveConfig();
     calculateSchedule();
@@ -930,6 +946,79 @@ function toggleTheme() {
     const isDark = document.documentElement.classList.toggle("dark");
     localStorage.setItem("theme", isDark ? "dark" : "light");
     renderCalendar(); // recolor gridlines etc.
+}
+
+function exportLocalData() {
+    const status = document.getElementById("export_data_status");
+    try {
+        saveConfig();
+        const stored = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            stored[key] = localStorage.getItem(key);
+        }
+
+        const payload = {
+            app: "class_schedule_picker",
+            version: 1,
+            exported_at: new Date().toISOString(),
+            localStorage: stored
+        };
+        const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+        const blob = new Blob([encoded], {type: "text/plain;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        a.href = url;
+        a.download = `schedule-picker-export-${stamp}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        if (status) {
+            status.textContent = "Exported";
+            setTimeout(() => { status.textContent = ""; }, 2500);
+        }
+    } catch (e) {
+        console.warn("Could not export local data.", e);
+        if (status) {
+            status.textContent = "Export failed";
+            setTimeout(() => { status.textContent = ""; }, 3500);
+        }
+    }
+}
+
+async function importLocalData(e) {
+    const status = document.getElementById("export_data_status");
+    const input = e.target;
+    const file = input.files && input.files[0];
+    if (!file) return;
+
+    try {
+        const encoded = (await file.text()).trim();
+        const payload = JSON.parse(decodeURIComponent(escape(atob(encoded))));
+        if (payload.app !== "class_schedule_picker" || !payload.localStorage || typeof payload.localStorage !== "object") {
+            throw new Error("Not a Schedule Picker export file.");
+        }
+
+        const ok = window.confirm("Importing will replace saved schedules, starred classes, filters, and other local settings on this computer. Continue?");
+        if (!ok) return;
+
+        localStorage.clear();
+        for (const [key, value] of Object.entries(payload.localStorage)) {
+            localStorage.setItem(key, String(value));
+        }
+        if (status) status.textContent = "Imported";
+        window.setTimeout(() => window.location.reload(), 300);
+    } catch (err) {
+        console.warn("Could not import local data.", err);
+        if (status) {
+            status.textContent = "Import failed";
+            setTimeout(() => { status.textContent = ""; }, 3500);
+        }
+    } finally {
+        input.value = "";
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1181,13 +1270,50 @@ function renderRow(course) {
     </tr>`;
 }
 
+function courseAndSectionCompare(a, b) {
+    const courseCmp = (a["Course"] || "").localeCompare(b["Course"] || "", undefined, {
+        numeric: true,
+        sensitivity: "base"
+    });
+    if (courseCmp !== 0) return courseCmp;
+    return (a["Section"] || "").localeCompare(b["Section"] || "", undefined, {
+        numeric: true,
+        sensitivity: "base"
+    });
+}
+
+function sortSavedCourses() {
+    if (!Array.isArray(config.courses)) return;
+    config.courses.sort((a, b) => {
+        const ca = classes[a];
+        const cb = classes[b];
+        if (ca && cb) return courseAndSectionCompare(ca, cb);
+        if (ca) return -1;
+        if (cb) return 1;
+        return 0;
+    });
+}
+
+function sortStarredCourses() {
+    if (!Array.isArray(config.favorites)) return;
+    config.favorites.sort((a, b) => {
+        const ca = classes[a];
+        const cb = classes[b];
+        if (ca && cb) return courseAndSectionCompare(ca, cb);
+        if (ca) return -1;
+        if (cb) return 1;
+        return 0;
+    });
+}
+
 function renderCoursesList() {
     const list = document.getElementById("courses_list");
     const empty = document.getElementById("courses_empty");
     const count = document.getElementById("courses_count");
     list.innerHTML = "";
 
-    const valid = config.courses.filter(crn => classes[crn]);
+    const valid = config.courses.filter(crn => classes[crn])
+        .sort((a, b) => courseAndSectionCompare(classes[a], classes[b]));
     count.textContent = valid.length;
     empty.classList.toggle("hidden", valid.length > 0);
 
@@ -1200,6 +1326,7 @@ function renderCoursesList() {
                 <span class="mt-1 h-2.5 w-2.5 rounded-full shrink-0" style="background:${color}"></span>
                 <span class="tip-trigger cursor-help flex-1 min-w-0" data-tip-crn="${escapeAttr(crn)}">
                     <span class="font-semibold text-slate-800 dark:text-slate-100">${escapeHtml(c["Course"])}</span>
+                    <span class="font-mono text-xs text-slate-400 dark:text-slate-500"> Sec ${escapeHtml(c["Section"] || "—")}</span>
                     <span class="text-slate-500 dark:text-slate-400"> · ${escapeHtml(c["Title"])}</span>
                 </span>
                 <button class="delete_course_btn btn-press shrink-0 grid place-items-center h-5 w-5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors" id="delete_course_${crn}" title="Remove">
@@ -1276,10 +1403,13 @@ function renderStarredList() {
     empty.classList.toggle("hidden", valid.length > 0);
     list.innerHTML = "";
 
-    // Sort: conflicts first (need attention), then fits, then no-times.
     const order = {conflict: 0, fits: 1, notimes: 2, missing: 3};
     const decorated = valid.map(crn => ({crn, info: favoriteConflict(crn)}));
-    decorated.sort((a, b) => order[a.info.state] - order[b.info.state]);
+    decorated.sort((a, b) => {
+        const courseCmp = courseAndSectionCompare(classes[a.crn], classes[b.crn]);
+        if (courseCmp !== 0) return courseCmp;
+        return order[a.info.state] - order[b.info.state];
+    });
 
     for (const {crn, info} of decorated) {
         const c = classes[crn];
@@ -1307,6 +1437,7 @@ function renderStarredList() {
                 <span class="flex items-center gap-1.5">
                     <span class="h-2.5 w-2.5 rounded-full shrink-0" style="background:${color}"></span>
                     <span class="font-semibold text-slate-800 dark:text-slate-100 truncate">${escapeHtml(c["Course"])}</span>
+                    <span class="font-mono text-xs text-slate-400 dark:text-slate-500 shrink-0">Sec ${escapeHtml(c["Section"] || "—")}</span>
                 </span>
                 <span class="block text-xs text-slate-400 dark:text-slate-500 truncate font-mono tnum mt-0.5">${escapeHtml(meetingsSummary(c))}</span>
             </span>
@@ -1339,6 +1470,7 @@ function handleCourseButtonPress(e) {
     switch (type) {
         case "add":
             if (!config.courses.includes(crn)) config.courses.push(crn);
+            sortSavedCourses();
             config.course_excludes = config.course_excludes.filter(c => c !== crn);
             justAddedCrn = crn;
             calculateSchedule();
@@ -1431,6 +1563,7 @@ function courseColor(courseCode) {
 function renderCalendar() {
     const container = document.getElementById("calendar");
     if (!container) return;
+    hideCalendarActionMenu();
 
     // Collect blocks: added courses (colored) + busy windows (muted).
     const blocks = [[], [], [], [], [], [], []];
@@ -1526,13 +1659,13 @@ function renderCalendar() {
                 const border = b.conflict ? "border-red-500" : "border-slate-400/80 dark:border-slate-400/60";
                 const textColor = `hsl(${b.hue} 60% ${isDark ? 70 : 38}%)`;
                 const ghostFill = `hsl(${b.hue} 62% 50% / 0.4)`;
-                return `<div class="tip-trigger cal-ghost absolute rounded-md border-2 border-dashed ${border} text-[11px] leading-tight px-1.5 py-1 overflow-hidden cursor-help" data-tip-crn="${escapeAttr(b.crn)}"
+                return `<div class="tip-trigger calendar_action_block cal-ghost absolute rounded-md border-2 border-dashed ${border} text-[11px] leading-tight px-1.5 py-1 overflow-hidden cursor-pointer" data-tip-crn="${escapeAttr(b.crn)}" data-cal-kind="starred" tabindex="0"
                     style="top:${top}px;height:${height}px;left:calc(${leftPct}% + 2px);width:calc(${widthPct}% - 4px);--ghost:${ghostFill};color:${textColor}">
                     <div class="font-bold truncate flex items-center gap-0.5"><span>★</span>${b.label}</div>
                     ${b.conflict ? `<div class="truncate font-semibold text-red-500">Clash</div>` : `<div class="truncate opacity-80">${formatMinutes(b.start)}</div>`}
                 </div>`;
             }
-            return `<div class="tip-trigger absolute rounded-md text-white text-[11px] leading-tight px-1.5 py-1 overflow-hidden shadow-sm cursor-help" data-tip-crn="${escapeAttr(b.crn)}"
+            return `<div class="tip-trigger calendar_action_block absolute rounded-md text-white text-[11px] leading-tight px-1.5 py-1 overflow-hidden shadow-sm cursor-pointer" data-tip-crn="${escapeAttr(b.crn)}" data-cal-kind="saved" tabindex="0"
                 style="top:${top}px;height:${height}px;left:calc(${leftPct}% + 2px);width:calc(${widthPct}% - 4px);background:${b.color}">
                 <div class="font-semibold truncate">${b.label}</div>
                 <div class="opacity-90 truncate">${formatMinutes(b.start).replace(" ", " ")}</div>
@@ -1551,6 +1684,117 @@ function renderCalendar() {
     </div>`;
 
     initTooltips(); // bind hover details for the freshly rendered blocks
+    initCalendarActionMenu(container);
+}
+
+function initCalendarActionMenu(container) {
+    if (container.dataset.calendarActionBound) return;
+    container.dataset.calendarActionBound = "1";
+    container.addEventListener("click", e => {
+        const block = closestEl(e.target, ".calendar_action_block");
+        if (!block) return;
+        e.stopPropagation();
+        showCalendarActionMenu(block);
+    });
+    container.addEventListener("keydown", e => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const block = closestEl(e.target, ".calendar_action_block");
+        if (!block) return;
+        e.preventDefault();
+        showCalendarActionMenu(block);
+    });
+}
+
+function calendarActionMenuEl() {
+    let menu = document.getElementById("calendar_action_menu");
+    if (menu) return menu;
+    menu = document.createElement("div");
+    menu.id = "calendar_action_menu";
+    menu.className = "hidden overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg text-sm";
+    menu.style.position = "fixed";
+    menu.style.zIndex = "50";
+    menu.style.minWidth = "11rem";
+    document.body.appendChild(menu);
+    return menu;
+}
+
+function showCalendarActionMenu(block) {
+    const crn = block.dataset.tipCrn;
+    const kind = block.dataset.calKind;
+    const course = classes[crn];
+    if (!crn || !course) return;
+    calendarActionCrn = crn;
+    document.getElementById("floating-tip").classList.remove("visible");
+
+    const title = `${course["Course"]} · Sec ${course["Section"] || "—"}`;
+    const actions = kind === "starred"
+        ? [
+            {action: "add", label: "Add to schedule", icon: "+"},
+            {action: "unstar", label: "Unstar", icon: "★"}
+        ]
+        : [
+            {action: "move-starred", label: "Move to starred", icon: "★"},
+            {action: "remove-saved", label: "Remove from schedule", icon: "x"}
+        ];
+
+    const menu = calendarActionMenuEl();
+    menu.innerHTML = `<div class="px-3 py-2 border-b border-slate-100 dark:border-slate-800">
+            <div class="font-semibold text-slate-800 dark:text-slate-100">${escapeHtml(title)}</div>
+            <div class="text-xs text-slate-400 dark:text-slate-500 truncate">${escapeHtml(course["Title"] || "")}</div>
+        </div>
+        <div class="py-1">
+            ${actions.map(a => `<button class="calendar_action_btn w-full flex items-center gap-2 px-3 py-2 text-left text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" type="button" data-action="${a.action}">
+                <span class="w-4 text-center text-slate-400 dark:text-slate-500">${a.icon}</span>
+                <span>${a.label}</span>
+            </button>`).join("")}
+        </div>`;
+
+    menu.querySelectorAll(".calendar_action_btn").forEach(btn =>
+        btn.addEventListener("click", e => {
+            e.stopPropagation();
+            runCalendarAction(btn.dataset.action);
+        }));
+
+    menu.classList.remove("hidden");
+    const r = block.getBoundingClientRect();
+    const mr = menu.getBoundingClientRect();
+    let left = r.left + r.width / 2 - mr.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - mr.width - 8));
+    let top = r.bottom + 8;
+    if (top + mr.height > window.innerHeight - 8) top = r.top - mr.height - 8;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideCalendarActionMenu() {
+    const menu = document.getElementById("calendar_action_menu");
+    if (menu) menu.classList.add("hidden");
+    calendarActionCrn = null;
+}
+
+function runCalendarAction(action) {
+    const crn = calendarActionCrn;
+    if (!crn) return;
+    if (action === "add") {
+        if (!config.courses.includes(crn)) config.courses.push(crn);
+        sortSavedCourses();
+        config.course_excludes = config.course_excludes.filter(c => c !== crn);
+        justAddedCrn = crn;
+    } else if (action === "unstar") {
+        config.favorites = config.favorites.filter(c => c !== crn);
+    } else if (action === "move-starred") {
+        config.courses = config.courses.filter(c => c !== crn);
+        config.show_conflict_crns = (config.show_conflict_crns || []).filter(c => c !== crn);
+        if (!config.favorites.includes(crn)) config.favorites.push(crn);
+        justStarredCrn = crn;
+    } else if (action === "remove-saved") {
+        config.courses = config.courses.filter(c => c !== crn);
+        config.show_conflict_crns = (config.show_conflict_crns || []).filter(c => c !== crn);
+    }
+    hideCalendarActionMenu();
+    calculateSchedule();
+    saveConfig();
+    refreshResults();
 }
 
 // Resolve overlapping blocks within one day into side-by-side columns.
