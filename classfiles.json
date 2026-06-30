@@ -1,0 +1,11 @@
+{
+  "WashU": {
+    "_format": "washu",
+    "fall-2026": "classes/WashU/fall-2026.json"
+  },
+  "FIT": {
+    "_format": "fit",
+    "_prefix_names": "classes/FIT/prefix_names.json",
+    "fall-2025": "classes/FIT/fall-2025.json"
+  }
+}

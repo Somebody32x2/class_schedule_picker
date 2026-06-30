@@ -3,3 +3,4 @@ page_cache/*
 .env
 classes.json
 .idea
+scrapers/*

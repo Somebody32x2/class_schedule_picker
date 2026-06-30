@@ -10,7 +10,7 @@ const WEEKDAYS = 5; // busy-time inputs cover Mon–Fri
 let config = {
     "max_level": 4,
     "prefixes_open": true,
-    "schedule_exclude_open": true,
+    "schedule_exclude_open": false,
     "calendar_open": true,
     "schedule_exclude_0_pre": "07:00",
     "schedule_exclude_0_post": "09:00",
@@ -35,10 +35,25 @@ let config = {
     "busy_all_pre": "07:00",
     "busy_all_post": "09:00",
     "prefix_presets": [],
-    "show_conflict_crns": []
+    "show_conflict_crns": [],
+    "schedule_presets": [],
+    "school": "",
+    "term": "",
+    // Per-(school|term) selection state lives here; the active workspace is mirrored
+    // into the top-level fields below so the rest of the code stays workspace-agnostic.
+    "workspaces": {}
 };
 
-// Prefix → {name, synonyms[]} lookup, loaded from prefix_names.json (optional).
+// Selection fields that are scoped per school+term (everything course/prefix related).
+const WORKSPACE_KEYS = [
+    "courses", "favorites", "course_excludes", "show_conflict_crns",
+    "prefixes", "prefix_presets", "schedule_presets"
+];
+
+let classfilesData = {};
+let currentSchema = { showCRN: true };
+
+// Prefix → {name, synonyms[]} lookup, derived from data or prefix_names.json.
 let prefixMeta = {};
 
 let all_prefixes = [];
@@ -49,13 +64,23 @@ let schedule = [[], [], [], [], [], [], []];
 let justAddedCrn = null;
 let justStarredCrn = null;
 
-Promise.all([
-    fetch('./classes.json').then(r => r.json()),
-    fetch('./prefix_names.json').then(r => r.ok ? r.json() : {}).catch(() => ({}))
-]).then(([data, names]) => {
-    classes = data;
-    // Drop documentation keys (those starting with "_").
-    prefixMeta = Object.fromEntries(Object.entries(names || {}).filter(([k]) => !k.startsWith("_")));
+// Tooltip state: whether Shift is currently held, and the element the cursor is
+// over, so a Shift press/release can live-swap the tooltip text while hovering.
+let shiftHeld = false;
+let activeTipEl = null;
+
+fetch('./classfiles.json').then(r => r.json()).then(async cfd => {
+    classfilesData = cfd;
+    loadConfig();
+    // Validate stored school/term against classfiles; fall back to first available.
+    if (!classfilesData[config.school]) config.school = Object.keys(classfilesData)[0] || "";
+    const schoolEntry = classfilesData[config.school] || {};
+    const availTerms = Object.keys(schoolEntry).filter(k => !k.startsWith("_"))
+        .sort((a, b) => termSortKey(b) - termSortKey(a));
+    if (!availTerms.includes(config.term)) config.term = availTerms[0] || "";
+    migrateLegacyWorkspace();
+    loadWorkspace();
+    await loadSchoolData(config.school, config.term);
     propagateWebpage();
 });
 
@@ -101,11 +126,36 @@ function parseMeetings(course) {
     return meetings;
 }
 
+// "2:30 PM" → "1430" (HHMM string compatible with toMinutes)
+function parseTime12hToHHMM(str) {
+    const m = String(str).trim().match(/^(\d+):(\d+)\s*([AP]M)$/i);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (m[3].toUpperCase() === "AM") { if (h === 12) h = 0; }
+    else { if (h !== 12) h += 12; }
+    return String(h).padStart(2, "0") + String(min).padStart(2, "0");
+}
+
+// "fall-2026" → "Fall 2026"
+function termDisplayName(slug) {
+    return String(slug).split("-").map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+}
+
+// Higher value = newer term. Year × 10 + season (spring=1, summer=2, fall=3).
+function termSortKey(slug) {
+    const parts = String(slug).split("-");
+    const year = parseInt(parts[parts.length - 1], 10) || 0;
+    const s = { spring: 1, summer: 2, fall: 3 }[parts[0]] || 0;
+    return year * 10 + s;
+}
+
 // --------------------------------------------------------------------------
 // Persistence
 // --------------------------------------------------------------------------
 
 function saveConfig() {
+    syncWorkspace();
     localStorage.setItem("config", btoa(unescape(encodeURIComponent(JSON.stringify(config)))));
 }
 
@@ -121,12 +171,145 @@ function loadConfig() {
 }
 
 // --------------------------------------------------------------------------
+// Per-school/term workspaces — keep each school+term's selections separate.
+// --------------------------------------------------------------------------
+
+function workspaceKey(school = config.school, term = config.term) {
+    return school + "|" + term;
+}
+
+const workspaceDefaults = () => ({
+    courses: [], favorites: [], course_excludes: [], show_conflict_crns: [],
+    prefixes: ["*"], prefix_presets: [], schedule_presets: []
+});
+
+// Mirror the active selection fields back into the workspace store.
+function syncWorkspace() {
+    if (!config.workspaces || typeof config.workspaces !== "object") config.workspaces = {};
+    if (!config.school && !config.term) return; // nothing meaningful to scope yet
+    const ws = {};
+    for (const k of WORKSPACE_KEYS) {
+        ws[k] = Array.isArray(config[k]) ? config[k].slice() : workspaceDefaults()[k];
+    }
+    config.workspaces[workspaceKey()] = ws;
+}
+
+// Load a workspace's selections into the top-level fields (defaults if absent).
+function loadWorkspace() {
+    if (!config.workspaces || typeof config.workspaces !== "object") config.workspaces = {};
+    const ws = config.workspaces[workspaceKey()] || workspaceDefaults();
+    const defs = workspaceDefaults();
+    for (const k of WORKSPACE_KEYS) {
+        config[k] = Array.isArray(ws[k]) ? ws[k].slice() : defs[k];
+    }
+}
+
+// One-time migration: configs saved before workspaces existed keep their
+// selections at the top level. Fold them into the active workspace so nothing
+// is lost when upgrading.
+function migrateLegacyWorkspace() {
+    if (!config.workspaces || typeof config.workspaces !== "object") config.workspaces = {};
+    if (config.workspaces[workspaceKey()]) return; // already migrated / native
+    const hasPrefixSel = Array.isArray(config.prefixes)
+        && !(config.prefixes.length === 1 && config.prefixes[0] === "*");
+    const hasLegacy = ["courses", "favorites", "course_excludes", "show_conflict_crns",
+        "prefix_presets", "schedule_presets"].some(k => Array.isArray(config[k]) && config[k].length)
+        || hasPrefixSel;
+    if (hasLegacy) syncWorkspace();
+}
+
+// --------------------------------------------------------------------------
+// Data loading / normalization
+// --------------------------------------------------------------------------
+
+async function loadSchoolData(school, term) {
+    const schoolEntry = classfilesData[school] || {};
+    const format = (schoolEntry["_format"] || "fit").toLowerCase();
+    const filePath = schoolEntry[term];
+    if (!filePath) { classes = {}; currentSchema = { showCRN: true }; prefixMeta = {}; return; }
+
+    const prefixPath = schoolEntry["_prefix_names"] || null;
+    const [rawClasses, rawNames] = await Promise.all([
+        fetch("./" + filePath).then(r => r.json()),
+        prefixPath
+            ? fetch("./" + prefixPath).then(r => r.ok ? r.json() : {}).catch(() => ({}))
+            : Promise.resolve(null)
+    ]);
+
+    const { normalizedClasses, schema } = normalizeClasses(rawClasses, format);
+    classes = normalizedClasses;
+    currentSchema = schema;
+
+    if (rawNames !== null) {
+        prefixMeta = Object.fromEntries(Object.entries(rawNames || {}).filter(([k]) => !k.startsWith("_")));
+    } else {
+        // Auto-derive prefix full names from the _department field (WashU style).
+        prefixMeta = {};
+        for (const c of Object.values(classes)) {
+            const prefix = (c["Course"] || "").split(" ")[0];
+            if (prefix && !prefixMeta[prefix] && c["_department"]) {
+                prefixMeta[prefix] = { name: c["_department"] };
+            }
+        }
+    }
+}
+
+function normalizeClasses(raw, format) {
+    if (format === "washu") return normalizeWashU(raw);
+    return normalizeFIT(raw);
+}
+
+function normalizeFIT(raw) {
+    const normalizedClasses = {};
+    for (const [key, c] of Object.entries(raw)) {
+        const crn = c["CRN"] || key;
+        normalizedClasses[crn] = { ...c, "_key": crn };
+    }
+    return { normalizedClasses, schema: { showCRN: true } };
+}
+
+function normalizeWashU(raw) {
+    const dayWordMap = { Mon: "M", Tue: "T", Wed: "W", Thu: "R", Fri: "F", Sat: "S", Sun: "U" };
+    const normalizedClasses = {};
+    for (const [id, c] of Object.entries(raw)) {
+        if (id.startsWith("_")) continue;
+        const classNum = c["class_num"] || "";
+        const section = c["section_num"] || "01";
+        const synKey = classNum.replace(/\s+/g, "") + "S" + section;
+        const days = (c["days"] || "").split(/\s+/).map(d => dayWordMap[d] || "").join("");
+        let times = "";
+        const tm = (c["time"] || "").match(/([\d:]+\s*[AP]M)\s*-\s*([\d:]+\s*[AP]M)/i);
+        if (tm) {
+            const s = parseTime12hToHHMM(tm[1]), e = parseTime12hToHHMM(tm[2]);
+            if (s && e) times = `${s}-${e}`;
+        }
+        normalizedClasses[synKey] = {
+            "_key": synKey,
+            "CRN": "",
+            "Course": classNum,
+            "Title": c["class_name"] || "",
+            "Section": section,
+            "Cr": String(c["credits"] || ""),
+            "details": c["description"] || "",
+            "Notes": "",
+            "Days": days,
+            "Times": times,
+            "Place": "",
+            "Instructor": c["instructor"] || "",
+            "Cap": c["seats"] || "",
+            "_department": c["department"] || "",
+            "_delivery": c["delivery"] || "",
+            "_school": decodeURIComponent((c["school"] || "").replace(/\+/g, " "))
+        };
+    }
+    return { normalizedClasses, schema: { showCRN: false } };
+}
+
+// --------------------------------------------------------------------------
 // Page setup
 // --------------------------------------------------------------------------
 
 async function propagateWebpage() {
-    loadConfig();
-
     // Per-day busy-time inputs (Mon–Fri)
     let excludeHTML = "";
     for (let i = 0; i < WEEKDAYS; i++) {
@@ -142,33 +325,9 @@ async function propagateWebpage() {
     document.getElementById("schedule_excludes").innerHTML = excludeHTML;
     syncBusyAllInputs();
 
-    // Build the master prefix list and, on first run ("*"), select all of them.
-    const isAll = config.prefixes.length === 1 && config.prefixes[0] === "*";
-    if (isAll) config.prefixes = [];
-    all_prefixes = [];
-    for (const course of Object.values(classes)) {
-        const prefix = course["Course"].split(" ")[0];
-        if (!all_prefixes.includes(prefix)) {
-            all_prefixes.push(prefix);
-            if (isAll) config.prefixes.push(prefix);
-        }
-    }
-    all_prefixes.sort();
-
-    document.getElementById("prefixes_list").innerHTML = all_prefixes.map(prefix => {
-        const meta = prefixMeta[prefix];
-        const name = meta && meta.name ? meta.name : "";
-        const synonyms = meta && Array.isArray(meta.synonyms) ? meta.synonyms : [];
-        // Lowercased haystack for the prefix filter: code + name + synonyms.
-        const search = [prefix, name, ...synonyms].join(" ").toLowerCase();
-        const labelSpan = name
-            ? `<span class="tip-trigger cursor-help text-slate-600 dark:text-slate-300" data-tip="${escapeAttr(name)}">${prefix}</span>`
-            : `<span class="text-slate-600 dark:text-slate-300">${prefix}</span>`;
-        return `<label class="prefix_row flex items-center gap-2 text-sm cursor-pointer select-none" data-search="${escapeAttr(search)}">
-            <input ${config.prefixes.includes(prefix) ? "checked" : ""} type="checkbox" class="prefix_toggle h-3.5 w-3.5 rounded accent-indigo-600" id="prefix_toggle_${prefix}">
-            ${labelSpan}
-        </label>`;
-    }).join("");
+    // School / term selects and prefix checkboxes
+    buildSchoolTermUI();
+    buildPrefixList();
 
     // Restore scalar inputs
     document.getElementById("max_level").value = config.max_level;
@@ -179,7 +338,7 @@ async function propagateWebpage() {
     // Restore collapse state
     document.querySelectorAll(".collapse_toggle").forEach(applyCollapseState);
 
-    // Event listeners
+    // Event listeners (attached once at startup)
     document.getElementById("max_level").addEventListener("input", handleValueChange);
     document.getElementById("margin_time").addEventListener("input", handleValueChange);
     document.getElementById("dynamic_times").addEventListener("change", handleValueChange);
@@ -187,9 +346,6 @@ async function propagateWebpage() {
     document.getElementById("prefixes_all").addEventListener("click", handlePrefixAllNone);
     document.getElementById("prefixes_none").addEventListener("click", handlePrefixAllNone);
     document.getElementById("theme_toggle").addEventListener("click", toggleTheme);
-
-    all_prefixes.forEach(prefix =>
-        document.getElementById(`prefix_toggle_${prefix}`).addEventListener("change", handlePrefixToggle));
 
     for (let i = 0; i < WEEKDAYS; i++) {
         document.getElementById(`schedule_exclude_${i}_pre`).addEventListener("input", handleValueChange);
@@ -218,8 +374,21 @@ async function propagateWebpage() {
     document.getElementById("prefixes_save").addEventListener("click", savePrefixPreset);
     renderPrefixPresets();
 
+    // Schedule presets (save / restore / rename / delete / clear)
+    document.getElementById("schedule_save").addEventListener("click", saveSchedulePreset);
+    document.getElementById("schedule_clear_btn").addEventListener("click", clearSchedule);
+    renderSchedulePresets();
+
     // Prefix search (matches code, full name, and synonyms)
-    document.getElementById("prefix_search").addEventListener("input", e => filterPrefixes(e.target.value));
+    document.getElementById("prefix_search").addEventListener("input", e => {
+        filterPrefixes(e.target.value);
+        updatePrefixSearchClear();
+    });
+    document.getElementById("prefix_search_clear").addEventListener("click", () => {
+        document.getElementById("prefix_search").value = "";
+        filterPrefixes("");
+        updatePrefixSearchClear();
+    });
 
     // Hidden-classes (exclusions) menu
     document.getElementById("exclusions_btn").addEventListener("click", toggleExclusionsMenu);
@@ -238,20 +407,8 @@ async function propagateWebpage() {
 
     calculateSchedule();
 
-    // Table header — fixed, hand-tuned column set (Sec/Cr fold into CRN; no More column)
-    document.getElementById("results-header").innerHTML =
-        `<tr class="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide shadow-sm">
-            <th class="px-2 py-2.5 font-semibold text-center w-10">★</th>
-            <th class="px-2 py-2.5 font-semibold text-center w-14">Add</th>
-            <th class="px-3 py-2.5 font-semibold text-left">CRN</th>
-            <th class="px-3 py-2.5 font-semibold text-left">Course</th>
-            <th class="px-3 py-2.5 font-semibold text-left">Title</th>
-            <th class="px-3 py-2.5 font-semibold text-left">Days</th>
-            <th class="px-3 py-2.5 font-semibold text-left">Time</th>
-            <th class="px-3 py-2.5 font-semibold text-left">Location</th>
-            <th class="px-3 py-2.5 font-semibold text-left">Instructor</th>
-            <th class="px-3 py-2.5 font-semibold text-center w-16">Cap</th>
-        </tr>`;
+    // Table header — adapts based on school schema (showCRN)
+    document.getElementById("results-header").innerHTML = renderTableHeader();
 
     refreshResults();
 }
@@ -440,6 +597,263 @@ function filterPrefixes(query) {
     document.getElementById("prefixes_noresults").classList.toggle("hidden", shown > 0);
 }
 
+function updatePrefixSearchClear() {
+    const btn = document.getElementById("prefix_search_clear");
+    if (btn) btn.classList.toggle("hidden", !document.getElementById("prefix_search").value);
+}
+
+// --------------------------------------------------------------------------
+// School / term switching
+// --------------------------------------------------------------------------
+
+function buildSchoolTermUI() {
+    const schoolMenu = document.getElementById("school_menu");
+    const termMenu = document.getElementById("term_menu");
+    const schoolLabel = document.getElementById("school_label");
+    const termLabel = document.getElementById("term_label");
+    if (!schoolMenu || !schoolLabel) return;
+
+    schoolLabel.textContent = config.school;
+    termLabel.textContent = termDisplayName(config.term);
+
+    schoolMenu.innerHTML = Object.keys(classfilesData).map(s =>
+        `<button class="school_item w-full text-left px-3 py-1.5 text-sm transition-colors ${s === config.school ? "font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10" : "text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"}" data-school="${escapeAttr(s)}">${escapeHtml(s)}</button>`
+    ).join("");
+
+    refreshTermDropdown();
+
+    document.getElementById("school_btn").addEventListener("click", e => {
+        e.stopPropagation();
+        const isOpen = !schoolMenu.classList.contains("hidden");
+        schoolMenu.classList.toggle("hidden", isOpen);
+        termMenu.classList.add("hidden");
+    });
+    document.getElementById("term_btn").addEventListener("click", e => {
+        e.stopPropagation();
+        const isOpen = !termMenu.classList.contains("hidden");
+        termMenu.classList.toggle("hidden", isOpen);
+        schoolMenu.classList.add("hidden");
+    });
+    document.addEventListener("click", () => {
+        schoolMenu.classList.add("hidden");
+        termMenu.classList.add("hidden");
+    });
+
+    schoolMenu.addEventListener("click", async e => {
+        const item = e.target.closest(".school_item");
+        if (!item) return;
+        const newSchool = item.dataset.school;
+        schoolMenu.classList.add("hidden");
+        if (newSchool === config.school) return;
+        config.school = newSchool;
+        schoolLabel.textContent = newSchool;
+        // Rebuild menu highlight and auto-select newest term
+        schoolMenu.querySelectorAll(".school_item").forEach(b => {
+            const active = b.dataset.school === newSchool;
+            b.classList.toggle("font-semibold", active);
+            b.classList.toggle("text-indigo-600", active);
+            b.classList.toggle("dark:text-indigo-400", active);
+            b.classList.toggle("bg-indigo-50", active);
+            b.classList.toggle("dark:bg-indigo-500/10", active);
+            b.classList.toggle("hover:bg-slate-50", !active);
+            b.classList.toggle("dark:hover:bg-slate-800", !active);
+        });
+        const entry = classfilesData[newSchool] || {};
+        const terms = Object.keys(entry).filter(k => !k.startsWith("_")).sort((a, b) => termSortKey(b) - termSortKey(a));
+        config.term = terms[0] || "";
+        termLabel.textContent = termDisplayName(config.term);
+        refreshTermDropdown();
+        await switchSchoolTerm(newSchool, config.term);
+    });
+
+    termMenu.addEventListener("click", async e => {
+        const item = e.target.closest(".term_item");
+        if (!item) return;
+        const newTerm = item.dataset.term;
+        termMenu.classList.add("hidden");
+        if (newTerm === config.term) return;
+        termLabel.textContent = termDisplayName(newTerm);
+        termMenu.querySelectorAll(".term_item").forEach(b => {
+            const active = b.dataset.term === newTerm;
+            b.classList.toggle("font-semibold", active);
+            b.classList.toggle("text-indigo-600", active);
+            b.classList.toggle("dark:text-indigo-400", active);
+            b.classList.toggle("bg-indigo-50", active);
+            b.classList.toggle("dark:bg-indigo-500/10", active);
+            b.classList.toggle("hover:bg-slate-50", !active);
+            b.classList.toggle("dark:hover:bg-slate-800", !active);
+        });
+        await switchSchoolTerm(config.school, newTerm);
+    });
+}
+
+function refreshTermDropdown() {
+    const termMenu = document.getElementById("term_menu");
+    const termLabel = document.getElementById("term_label");
+    if (!termMenu) return;
+    const schoolEntry = classfilesData[config.school] || {};
+    const terms = Object.keys(schoolEntry).filter(k => !k.startsWith("_"))
+        .sort((a, b) => termSortKey(b) - termSortKey(a));
+    termMenu.innerHTML = terms.map(t =>
+        `<button class="term_item w-full text-left px-3 py-1.5 text-sm transition-colors ${t === config.term ? "font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10" : "text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"}" data-term="${escapeAttr(t)}">${escapeHtml(termDisplayName(t))}</button>`
+    ).join("");
+    if (termLabel) termLabel.textContent = termDisplayName(config.term);
+}
+
+async function switchSchoolTerm(school, term) {
+    syncWorkspace();                 // persist the workspace we're leaving
+    config.school = school;
+    config.term = term;
+    loadWorkspace();                 // restore (or default) the target workspace
+    await loadSchoolData(school, term);
+    config.search_bar = "";
+    document.getElementById("search_bar").value = "";
+    buildPrefixList();
+    renderPrefixPresets();
+    renderSchedulePresets();
+    document.getElementById("results-header").innerHTML = renderTableHeader();
+    saveConfig();
+    calculateSchedule();
+    refreshResults();
+}
+
+function buildPrefixList() {
+    const isAll = config.prefixes.length === 1 && config.prefixes[0] === "*";
+    if (isAll) config.prefixes = [];
+    all_prefixes = [];
+    for (const course of Object.values(classes)) {
+        const prefix = (course["Course"] || "").split(" ")[0];
+        if (prefix && !all_prefixes.includes(prefix)) {
+            all_prefixes.push(prefix);
+            if (isAll) config.prefixes.push(prefix);
+        }
+    }
+    all_prefixes.sort();
+
+    document.getElementById("prefixes_list").innerHTML = all_prefixes.map(prefix => {
+        const meta = prefixMeta[prefix];
+        const name = meta && meta.name ? meta.name : "";
+        const synonyms = meta && Array.isArray(meta.synonyms) ? meta.synonyms : [];
+        const search = [prefix, name, ...synonyms].join(" ").toLowerCase();
+        const labelSpan = name
+            ? `<span class="tip-trigger cursor-help text-slate-600 dark:text-slate-300" data-tip="${escapeAttr(name)}">${prefix}</span>`
+            : `<span class="text-slate-600 dark:text-slate-300">${prefix}</span>`;
+        return `<label class="prefix_row flex items-center gap-2 text-sm cursor-pointer select-none" data-search="${escapeAttr(search)}">
+            <input ${config.prefixes.includes(prefix) ? "checked" : ""} type="checkbox" class="prefix_toggle h-3.5 w-3.5 rounded accent-indigo-600" id="prefix_toggle_${prefix}">
+            ${labelSpan}
+        </label>`;
+    }).join("");
+
+    all_prefixes.forEach(prefix =>
+        document.getElementById(`prefix_toggle_${prefix}`).addEventListener("change", handlePrefixToggle));
+
+    document.getElementById("prefixes_noresults").classList.add("hidden");
+}
+
+function renderTableHeader() {
+    const crnTh = currentSchema.showCRN
+        ? `<th class="px-3 py-2.5 font-semibold text-left w-20">CRN</th>` : "";
+    const courseTh = currentSchema.showCRN
+        ? `<th class="px-3 py-2.5 font-semibold text-left w-24">Course</th>`
+        : `<th class="px-3 py-2.5 font-semibold text-left w-40">Course</th>`;
+    return `<tr class="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide shadow-sm">
+        <th class="px-2 py-2.5 font-semibold text-center w-10">★</th>
+        <th class="px-2 py-2.5 font-semibold text-center w-20">Add</th>
+        ${crnTh}
+        ${courseTh}
+        <th class="px-3 py-2.5 font-semibold text-left">Title</th>
+        <th class="px-3 py-2.5 font-semibold text-left w-16">Days</th>
+        <th class="px-3 py-2.5 font-semibold text-left w-48">Time</th>
+        <th class="px-2 py-2.5 font-semibold text-center w-10">Loc</th>
+        <th class="px-3 py-2.5 font-semibold text-left w-32">Instructor</th>
+        <th class="px-3 py-2.5 font-semibold text-center w-16">Cap</th>
+    </tr>`;
+}
+
+// --------------------------------------------------------------------------
+// Saved schedule presets (save / restore / rename / delete / clear)
+// --------------------------------------------------------------------------
+
+function saveSchedulePreset() {
+    if (!Array.isArray(config.schedule_presets)) config.schedule_presets = [];
+    let n = config.schedule_presets.length + 1;
+    const used = new Set(config.schedule_presets.map(p => p.name));
+    while (used.has(`Schedule ${n}`)) n++;
+    config.schedule_presets.push({
+        name: `Schedule ${n}`,
+        courses: config.courses.slice(),
+        show_conflict_crns: (config.show_conflict_crns || []).slice()
+    });
+    saveConfig();
+    renderSchedulePresets(config.schedule_presets.length - 1);
+}
+
+function renderSchedulePresets(animateIdx = -1) {
+    const wrap = document.getElementById("schedule_presets");
+    if (!wrap) return;
+    const presets = Array.isArray(config.schedule_presets) ? config.schedule_presets : [];
+    wrap.innerHTML = presets.map((p, i) => `
+        <span class="sched_preset_pill group relative inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 pl-2 pr-1 py-1 ${i === animateIdx ? "animate-pop" : ""}">
+            <button class="sched_restore btn-press text-xs font-medium text-slate-700 dark:text-slate-200 max-w-[9rem] truncate" data-idx="${i}" title="Load ${escapeAttr(p.name)} (${p.courses.length} course${p.courses.length === 1 ? '' : 's'})">${escapeHtml(p.name)}</button>
+            <span class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                <button class="sched_rename grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-indigo-500" data-idx="${i}" title="Rename">
+                    <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m16.5 3.5 4 4L7 21H3v-4L16.5 3.5Z"/></svg>
+                </button>
+                <button class="sched_delete grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-red-500" data-idx="${i}" title="Delete">
+                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+                </button>
+            </span>
+        </span>`).join("");
+
+    wrap.querySelectorAll(".sched_restore").forEach(b => b.addEventListener("click", () => restoreSchedulePreset(+b.dataset.idx)));
+    wrap.querySelectorAll(".sched_rename").forEach(b => b.addEventListener("click", () => renameSchedulePreset(+b.dataset.idx)));
+    wrap.querySelectorAll(".sched_delete").forEach(b => b.addEventListener("click", () => deleteSchedulePreset(+b.dataset.idx)));
+}
+
+function restoreSchedulePreset(idx) {
+    const p = (config.schedule_presets || [])[idx];
+    if (!p) return;
+    config.courses = p.courses.slice();
+    config.show_conflict_crns = (p.show_conflict_crns || []).slice();
+    saveConfig();
+    calculateSchedule();
+    refreshResults();
+}
+
+function renameSchedulePreset(idx) {
+    const p = (config.schedule_presets || [])[idx];
+    if (!p) return;
+    const name = window.prompt("Rename schedule:", p.name);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (trimmed) p.name = trimmed;
+    saveConfig();
+    renderSchedulePresets();
+}
+
+function deleteSchedulePreset(idx) {
+    const pill = document.querySelectorAll("#schedule_presets .sched_preset_pill")[idx];
+    const finish = () => {
+        config.schedule_presets.splice(idx, 1);
+        saveConfig();
+        renderSchedulePresets();
+    };
+    if (pill) {
+        pill.classList.add("animate-out");
+        setTimeout(finish, 180);
+    } else {
+        finish();
+    }
+}
+
+function clearSchedule() {
+    config.courses = [];
+    config.show_conflict_crns = [];
+    saveConfig();
+    calculateSchedule();
+    refreshResults();
+}
+
 // --------------------------------------------------------------------------
 // Hidden classes (exclusions) menu
 // --------------------------------------------------------------------------
@@ -471,7 +885,7 @@ function renderExclusionsList() {
         <span class="flex-1 min-w-0">
             <span class="block text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">${escapeHtml(c["Course"])} <span class="font-normal text-slate-400">·</span> <span class="font-normal text-slate-500 dark:text-slate-400">${escapeHtml(c["Title"])}</span></span>
         </span>
-        <button class="restore_exclusion_btn btn-press shrink-0 text-xs font-medium px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" data-crn="${escapeAttr(c["CRN"])}" type="button">Restore</button>
+        <button class="restore_exclusion_btn btn-press shrink-0 text-xs font-medium px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" data-crn="${escapeAttr(c["_key"] || c["CRN"])}" type="button">Restore</button>
     </li>`).join("");
 
     if (config.course_excludes.length > 0 && hidden.length === 0) {
@@ -601,8 +1015,9 @@ function refreshResults() {
     const maxLevel = Number.parseInt(config.max_level, 10) || 9;
 
     let result_classes = Object.values(classes).filter(course => {
-        if (config.course_excludes.includes(course["CRN"])) return false;       // manually hidden
-        if (config.courses.includes(course["CRN"])) return false;               // already added
+        const courseId = course["_key"] || course["CRN"];
+        if (config.course_excludes.includes(courseId)) return false;       // manually hidden
+        if (config.courses.includes(courseId)) return false;               // already added
         const num = Number.parseInt(course["Course"].split(" ")[1], 10);
         if (!Number.isNaN(num) && Math.floor(num / 1000) > maxLevel) return false;
         if (!config.prefixes.includes(course["Course"].split(" ")[0])) return false;
@@ -619,8 +1034,8 @@ function refreshResults() {
     } else {
         // Favorites first, then by course code, when not running a fuzzy search
         result_classes.sort((a, b) => {
-            const fa = config.favorites.includes(a["CRN"]) ? 0 : 1;
-            const fb = config.favorites.includes(b["CRN"]) ? 0 : 1;
+            const fa = config.favorites.includes(a["_key"] || a["CRN"]) ? 0 : 1;
+            const fb = config.favorites.includes(b["_key"] || b["CRN"]) ? 0 : 1;
             if (fa !== fb) return fa - fb;
             return a["Course"].localeCompare(b["Course"]);
         });
@@ -673,9 +1088,21 @@ function refreshResults() {
     justStarredCrn = null;
 }
 
+function deliveryIcon(delivery) {
+    const lower = (delivery || "").toLowerCase();
+    if (lower.includes("hybrid")) {
+        return `<svg class="h-4 w-4 text-teal-500 dark:text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 0 1 1.06 0Z"/></svg>`;
+    }
+    if (lower.includes("online") || lower.includes("distance")) {
+        return `<svg class="h-4 w-4 text-indigo-500 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 0 1 1.06 0Z"/></svg>`;
+    }
+    return `<svg class="h-4 w-4 text-amber-500 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"/></svg>`;
+}
+
 function renderRow(course) {
-    const crn = course["CRN"];
-    const starred = config.favorites.includes(crn);
+    const id = course["_key"] || course["CRN"];
+    const displayCrn = course["CRN"];
+    const starred = config.favorites.includes(id);
 
     // Title + hoverable description (with any note appended into the tooltip)
     const detailText = course["details"] || "";
@@ -688,7 +1115,7 @@ function renderRow(course) {
         : "";
     const descDisplay = detailText || note;
     const descLine = tipText
-        ? `<div class="tip-trigger cursor-help text-xs text-slate-400 dark:text-slate-500 truncate max-w-[26rem] leading-snug" data-tip="${escapeAttr(tipText)}">${escapeHtml(descDisplay)}${noteBadge}</div>`
+        ? `<div class="tip-trigger cursor-help text-xs text-slate-400 dark:text-slate-500 truncate leading-snug" data-tip="${escapeAttr(tipText)}">${escapeHtml(descDisplay)}${noteBadge}</div>`
         : "";
 
     // Time + Days formatting
@@ -699,7 +1126,14 @@ function renderRow(course) {
         return `${formatMinutes(sm)}&nbsp;–&nbsp;${formatMinutes(em)}`;
     }).join("<br>");
     const daysHtml = escapeHtml(course["Days"] || "").replaceAll("\n", "<br>");
-    const placeHtml = escapeHtml(course["Place"] || "").replaceAll("\n", "<br>");
+    const placeText = (course["Place"] || "").split("\n")[0];
+    const delivery = course["_delivery"] || "";
+    let locHtml = "";
+    if (delivery && delivery.toLowerCase() !== "in-person") {
+        locHtml = `<span class="tip-trigger cursor-help inline-flex items-center justify-center" data-tip="${escapeAttr(delivery)}">${deliveryIcon(delivery)}</span>`;
+    } else if (placeText) {
+        locHtml = `<span class="tip-trigger cursor-help inline-flex items-center text-slate-400 dark:text-slate-500" data-tip="${escapeAttr(placeText)}"><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/></svg></span>`;
+    }
 
     // Cap colouring
     const capVal = course["Cap"] || "";
@@ -714,31 +1148,35 @@ function renderRow(course) {
 
     return `<tr>
         <td class="px-2 py-1.5 text-center align-middle">
-            <button class="star_course_btn btn-press text-lg leading-none ${crn === justStarredCrn ? "animate-pop" : ""} ${starred ? "text-amber-400" : "text-slate-300 dark:text-slate-600 hover:text-amber-400"}" id="star_course_${crn}" title="Star to compare">${starred ? "★" : "☆"}</button>
+            <button class="star_course_btn btn-press text-lg leading-none ${id === justStarredCrn ? "animate-pop" : ""} ${starred ? "text-amber-400" : "text-slate-300 dark:text-slate-600 hover:text-amber-400"}" id="star_course_${id}" title="Star to compare">${starred ? "★" : "☆"}</button>
         </td>
         <td class="px-2 py-1.5 text-center align-middle whitespace-nowrap">
-            <span class="inline-flex gap-1">
-                <button class="add_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-green-500/50 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-600 hover:text-white hover:border-green-600" id="add_course_${crn}" title="Add to schedule">
+            <span class="inline-flex gap-2">
+                <button class="add_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-green-500/50 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-600 hover:text-white hover:border-green-600" id="add_course_${id}" title="Add to schedule">
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></svg>
                 </button>
-                <button class="remove_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-red-500/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white hover:border-red-600" id="remove_course_${crn}" title="Hide this class">
+                <button class="remove_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-red-500/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white hover:border-red-600" id="remove_course_${id}" title="Hide this section  (Shift-click: hide all sections of ${escapeAttr(course["Course"] || "this course")})">
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14"/></svg>
                 </button>
             </span>
         </td>
-        <td class="px-3 py-1.5 align-top whitespace-nowrap">
-            <div class="font-mono tnum text-xs text-slate-500 dark:text-slate-400 leading-tight">${escapeHtml(crn)}</div>
-            <div class="font-mono text-[9px] leading-none tracking-tight text-slate-400/80 dark:text-slate-500/80">${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
+        ${currentSchema.showCRN ? `<td class="px-3 py-1.5 align-top whitespace-nowrap">
+            <div class="font-mono tnum text-xs text-slate-500 dark:text-slate-400 leading-tight">${escapeHtml(displayCrn)}</div>
+            <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500">${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
         </td>
-        <td class="px-3 py-1.5 align-top font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}</td>
-        <td class="px-3 py-1.5 align-top">
-            <div class="font-medium text-slate-800 dark:text-slate-100 leading-snug max-w-[26rem] truncate">${escapeHtml(course["Title"] || "")}</div>
+        <td class="px-3 py-1.5 align-top font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}</td>`
+        : `<td class="px-3 py-1.5 align-top whitespace-nowrap">
+            <div class="font-semibold text-slate-800 dark:text-slate-100 leading-tight">${escapeHtml(course["Course"] || "")}</div>
+            <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500">Sec ${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
+        </td>`}
+        <td class="px-3 py-1.5 align-top overflow-hidden">
+            <div class="font-medium text-slate-800 dark:text-slate-100 leading-snug truncate">${escapeHtml(course["Title"] || "")}</div>
             ${descLine}
         </td>
         <td class="px-3 py-1.5 align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap">${daysHtml}</td>
         <td class="px-3 py-1.5 align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap">${timeHtml}</td>
-        <td class="px-3 py-1.5 align-top text-slate-500 dark:text-slate-400 whitespace-nowrap">${placeHtml}</td>
-        <td class="px-3 py-1.5 align-top text-slate-600 dark:text-slate-300 whitespace-nowrap">${escapeHtml(course["Instructor"] || "")}</td>
+        <td class="px-2 py-1.5 align-middle text-center">${locHtml}</td>
+        <td class="px-3 py-1.5 align-top text-slate-600 dark:text-slate-300"><div class="max-w-[10rem] truncate">${escapeHtml(course["Instructor"] || "")}</div></td>
         <td class="px-3 py-1.5 align-middle text-center tnum ${capCls}">${escapeHtml(capVal)}</td>
     </tr>`;
 }
@@ -895,7 +1333,7 @@ function handleCourseButtonPress(e) {
     const id = (btn && btn.id) ? btn.id : (e.target && e.target.id) || "";
     const parts = id.split("_");
     const type = parts[0];
-    const crn = parts[2];
+    const crn = parts.slice(2).join("_");
     if (!crn) return;
 
     switch (type) {
@@ -917,11 +1355,27 @@ function handleCourseButtonPress(e) {
             });
             break;
         case "remove":
-            if (!config.course_excludes.includes(crn)) config.course_excludes.push(crn);
-            animateOutThen(closestEl(btn, "tr"), () => {
+            if (e.shiftKey) {
+                // Shift-click: hide every section sharing this course number.
+                const courseCode = classes[crn] ? classes[crn]["Course"] : null;
+                if (courseCode) {
+                    for (const c of Object.values(classes)) {
+                        if (c["Course"] !== courseCode) continue;
+                        const cid = c["_key"] || c["CRN"];
+                        if (!config.course_excludes.includes(cid)) config.course_excludes.push(cid);
+                    }
+                } else if (!config.course_excludes.includes(crn)) {
+                    config.course_excludes.push(crn);
+                }
                 saveConfig();
                 refreshResults();
-            });
+            } else {
+                if (!config.course_excludes.includes(crn)) config.course_excludes.push(crn);
+                animateOutThen(closestEl(btn, "tr"), () => {
+                    saveConfig();
+                    refreshResults();
+                });
+            }
             break;
         case "star":
             if (config.favorites.includes(crn)) {
