@@ -7,6 +7,29 @@
 @theme {
     --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+    /* Accent palette is indirected through runtime vars so it can be re-themed
+       per school at runtime (see --accent-* in :root). Default is a warm red. */
+    --color-accent-50: var(--accent-50);
+    --color-accent-100: var(--accent-100);
+    --color-accent-200: var(--accent-200);
+    --color-accent-300: var(--accent-300);
+    --color-accent-400: var(--accent-400);
+    --color-accent-500: var(--accent-500);
+    --color-accent-600: var(--accent-600);
+    --color-accent-700: var(--accent-700);
+}
+
+/* Default accent = a warm vermilion red (overridable per school via JS). */
+:root {
+    --accent-50: oklch(0.971 0.013 17.4);
+    --accent-100: oklch(0.936 0.032 17.7);
+    --accent-200: oklch(0.885 0.062 18.3);
+    --accent-300: oklch(0.808 0.108 19.6);
+    --accent-400: oklch(0.704 0.176 22.2);
+    --accent-500: oklch(0.637 0.222 25.3);
+    --accent-600: oklch(0.577 0.226 27.3);
+    --accent-700: oklch(0.505 0.213 27.5);
 }
 
 @layer base {
@@ -22,6 +45,8 @@
         font-feature-settings: "cv11", "ss01";
         -webkit-font-smoothing: antialiased;
         text-rendering: optimizeLegibility;
+        /* Warm, slightly-off neutral rather than the stock slate-100/slate-950 */
+        background-color: var(--app-bg);
     }
 
     /* Thin, theme-aware scrollbars */
@@ -49,20 +74,33 @@
         background-color: var(--row-hover);
     }
 
+    /* Grouped results (WashU): keep zebra banding, but the header bar carries its
+       own tint so don't hover-highlight it, and separate sections with thin rules. */
+    #results-body.grouped tr.wgroup-header:hover {
+        background-color: transparent;
+    }
+
+    #results-body tr.wsection > td {
+        border-top: 1px solid color-mix(in oklch, var(--accent-500) 12%, transparent);
+    }
+
     :root {
         --row-band: rgba(15, 23, 42, 0.028);
-        --row-hover: rgba(79, 70, 229, 0.07);
+        --row-hover: color-mix(in oklch, var(--accent-500) 8%, transparent);
         --cal-line: rgba(100, 116, 139, 0.14);
         --switch-off: rgb(203, 213, 225);
-        --switch-on: rgb(79, 70, 229);
+        --switch-on: var(--accent-600);
+        /* Cool, slate-aligned neutral so it sits well behind the slate cards */
+        --app-bg: oklch(0.975 0.004 255);
     }
 
     .dark {
         --row-band: rgba(148, 163, 184, 0.05);
-        --row-hover: rgba(99, 102, 241, 0.14);
+        --row-hover: color-mix(in oklch, var(--accent-500) 16%, transparent);
         --cal-line: rgba(148, 163, 184, 0.16);
         --switch-off: rgb(71, 85, 105);
-        --switch-on: rgb(99, 102, 241);
+        --switch-on: var(--accent-500);
+        --app-bg: oklch(0.19 0.014 260);
     }
 
     /* Tabular figures for the data-heavy mono columns */
@@ -172,14 +210,46 @@
     z-index: 60;
     max-width: 24rem;
     pointer-events: none;
+    user-select: text;
     opacity: 0;
     transform: translateY(4px);
     transition: opacity 0.12s ease, transform 0.12s ease;
 }
 
+/* Once visible the tip accepts the pointer so it can be hovered and its text
+   selected/copied (the trigger gives a short grace period before hiding). */
 #floating-tip.visible {
     opacity: 1;
     transform: translateY(0);
+    pointer-events: auto;
+}
+
+/* JS-positioned interactive section picker (hover the +/star/cap/section number) */
+#section-popover {
+    position: fixed;
+    z-index: 65;
+    width: 17rem;
+    max-width: calc(100vw - 1rem);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+#section-popover.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+/* A grouped course (WashU): header bar + its section rows read as one block. */
+#results-body .wgroup-header td {
+    border-top: 1px solid var(--cal-line);
+}
+
+#results-body tr.wsection > td:first-child,
+#results-body tr.wdivider > td {
+    border-left: 2px solid color-mix(in oklch, var(--accent-500) 45%, transparent);
 }
 
 /* Calendar hour gridlines drawn via gradient so blocks can sit on top */

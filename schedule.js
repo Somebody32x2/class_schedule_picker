@@ -8,6 +8,7 @@ const dayShort = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const WEEKDAYS = 5; // busy-time inputs cover Mon–Fri
 
 let config = {
+    "min_level": 0,
     "max_level": 4,
     "prefixes_open": true,
     "schedule_exclude_open": false,
@@ -36,19 +37,18 @@ let config = {
     "busy_all_post": "09:00",
     "prefix_presets": [],
     "show_conflict_crns": [],
-    "schedule_presets": [],
+    // Schedules are live workspaces: each holds its own courses/favorites/conflicts.
+    // The active one is mirrored into courses/favorites/show_conflict_crns above.
+    "schedules": [],
+    "active_schedule": 0,
     "school": "",
     "term": "",
+    // Per-school accent name (key into ACCENT_PALETTES). Defaults to red everywhere.
+    "school_accents": {},
     // Per-(school|term) selection state lives here; the active workspace is mirrored
     // into the top-level fields below so the rest of the code stays workspace-agnostic.
     "workspaces": {}
 };
-
-// Selection fields that are scoped per school+term (everything course/prefix related).
-const WORKSPACE_KEYS = [
-    "courses", "favorites", "course_excludes", "show_conflict_crns",
-    "prefixes", "prefix_presets", "schedule_presets"
-];
 
 let classfilesData = {};
 let currentSchema = { showCRN: true };
@@ -81,6 +81,7 @@ fetch('./classfiles.json').then(r => r.json()).then(async cfd => {
     if (!availTerms.includes(config.term)) config.term = availTerms[0] || "";
     migrateLegacyWorkspace();
     loadWorkspace();
+    applyAccent(config.school);
     await loadSchoolData(config.school, config.term);
     propagateWebpage();
 });
@@ -174,6 +175,34 @@ function loadConfig() {
 }
 
 // --------------------------------------------------------------------------
+// Accent theming — the accent palette is swappable per school at runtime.
+// Each palette is [50,100,200,300,400,500,600,700] as oklch strings.
+// --------------------------------------------------------------------------
+
+const ACCENT_PALETTES = {
+    red: ["oklch(0.971 0.013 17.4)", "oklch(0.936 0.032 17.7)", "oklch(0.885 0.062 18.3)",
+        "oklch(0.808 0.108 19.6)", "oklch(0.704 0.176 22.2)", "oklch(0.637 0.222 25.3)",
+        "oklch(0.577 0.226 27.3)", "oklch(0.505 0.213 27.5)"],
+    // Alternates available for per-school theming (both schools default to red).
+    blue: ["oklch(0.97 0.014 254)", "oklch(0.932 0.032 255)", "oklch(0.882 0.059 254)",
+        "oklch(0.809 0.105 252)", "oklch(0.707 0.165 254)", "oklch(0.623 0.214 259)",
+        "oklch(0.546 0.215 263)", "oklch(0.488 0.192 264)"],
+    emerald: ["oklch(0.979 0.021 166)", "oklch(0.95 0.052 163)", "oklch(0.905 0.093 164)",
+        "oklch(0.845 0.143 164)", "oklch(0.765 0.177 163)", "oklch(0.696 0.17 162)",
+        "oklch(0.596 0.145 163)", "oklch(0.508 0.118 165)"],
+    violet: ["oklch(0.969 0.016 293)", "oklch(0.943 0.029 294)", "oklch(0.894 0.057 293)",
+        "oklch(0.811 0.111 293)", "oklch(0.711 0.166 294)", "oklch(0.606 0.25 292)",
+        "oklch(0.541 0.281 293)", "oklch(0.491 0.27 293)"]
+};
+
+function applyAccent(school) {
+    const name = (config.school_accents && config.school_accents[school]) || "red";
+    const palette = ACCENT_PALETTES[name] || ACCENT_PALETTES.red;
+    const steps = [50, 100, 200, 300, 400, 500, 600, 700];
+    steps.forEach((step, i) => document.documentElement.style.setProperty(`--accent-${step}`, palette[i]));
+}
+
+// --------------------------------------------------------------------------
 // Per-school/term workspaces — keep each school+term's selections separate.
 // --------------------------------------------------------------------------
 
@@ -181,30 +210,109 @@ function workspaceKey(school = config.school, term = config.term) {
     return school + "|" + term;
 }
 
-const workspaceDefaults = () => ({
-    courses: [], favorites: [], course_excludes: [], show_conflict_crns: [],
-    prefixes: ["*"], prefix_presets: [], schedule_presets: []
+const blankSchedule = (name = "Schedule 1") => ({
+    name, courses: [], favorites: [], show_conflict_crns: []
 });
+
+const workspaceDefaults = () => ({
+    prefixes: ["*"], prefix_presets: [], course_excludes: [],
+    schedules: [blankSchedule()], active_schedule: 0
+});
+
+// Coerce any stored workspace (current or older formats) into the live-schedules
+// shape: { prefixes, prefix_presets, course_excludes, schedules[], active_schedule }.
+function normalizeWorkspace(ws) {
+    const defs = workspaceDefaults();
+    if (!ws || typeof ws !== "object") return defs;
+    const base = {
+        prefixes: Array.isArray(ws.prefixes) ? ws.prefixes.slice() : defs.prefixes,
+        prefix_presets: Array.isArray(ws.prefix_presets) ? ws.prefix_presets.slice() : [],
+        course_excludes: Array.isArray(ws.course_excludes) ? ws.course_excludes.slice() : []
+    };
+    const cleanSched = s => ({
+        name: s && s.name || "Schedule",
+        courses: Array.isArray(s && s.courses) ? s.courses.slice() : [],
+        favorites: Array.isArray(s && s.favorites) ? s.favorites.slice() : [],
+        show_conflict_crns: Array.isArray(s && s.show_conflict_crns) ? s.show_conflict_crns.slice() : []
+    });
+    if (Array.isArray(ws.schedules) && ws.schedules.length) {
+        // Already in the new format.
+        base.schedules = ws.schedules.map(cleanSched);
+        base.active_schedule = Number.isInteger(ws.active_schedule) ? ws.active_schedule : 0;
+    } else {
+        // Older format: workspace-level courses/favorites + schedule_presets snapshots.
+        const schedules = [cleanSched({
+            name: "Schedule 1", courses: ws.courses, favorites: ws.favorites,
+            show_conflict_crns: ws.show_conflict_crns
+        })];
+        if (Array.isArray(ws.schedule_presets)) {
+            for (const p of ws.schedule_presets) schedules.push(cleanSched(p));
+        }
+        base.schedules = schedules;
+        base.active_schedule = 0;
+    }
+    if (base.active_schedule < 0 || base.active_schedule >= base.schedules.length) base.active_schedule = 0;
+    return base;
+}
+
+// Write the active schedule's contents from the top-level mirror fields.
+function syncActiveSchedule() {
+    if (!Array.isArray(config.schedules) || !config.schedules.length) {
+        config.schedules = [blankSchedule()];
+        config.active_schedule = 0;
+    }
+    let i = config.active_schedule || 0;
+    if (i < 0 || i >= config.schedules.length) i = 0;
+    config.active_schedule = i;
+    config.schedules[i] = {
+        name: config.schedules[i].name || `Schedule ${i + 1}`,
+        courses: (config.courses || []).slice(),
+        favorites: (config.favorites || []).slice(),
+        show_conflict_crns: (config.show_conflict_crns || []).slice()
+    };
+}
+
+// Mirror the active schedule into the top-level course/favorite/conflict fields.
+function loadActiveSchedule() {
+    if (!Array.isArray(config.schedules) || !config.schedules.length) config.schedules = [blankSchedule()];
+    let i = config.active_schedule || 0;
+    if (i < 0 || i >= config.schedules.length) i = 0;
+    config.active_schedule = i;
+    const s = config.schedules[i];
+    config.courses = (s.courses || []).slice();
+    config.favorites = (s.favorites || []).slice();
+    config.show_conflict_crns = (s.show_conflict_crns || []).slice();
+}
 
 // Mirror the active selection fields back into the workspace store.
 function syncWorkspace() {
     if (!config.workspaces || typeof config.workspaces !== "object") config.workspaces = {};
     if (!config.school && !config.term) return; // nothing meaningful to scope yet
-    const ws = {};
-    for (const k of WORKSPACE_KEYS) {
-        ws[k] = Array.isArray(config[k]) ? config[k].slice() : workspaceDefaults()[k];
-    }
-    config.workspaces[workspaceKey()] = ws;
+    syncActiveSchedule();
+    config.workspaces[workspaceKey()] = {
+        prefixes: (config.prefixes || ["*"]).slice(),
+        prefix_presets: (config.prefix_presets || []).slice(),
+        course_excludes: (config.course_excludes || []).slice(),
+        schedules: config.schedules.map(s => ({
+            name: s.name,
+            courses: (s.courses || []).slice(),
+            favorites: (s.favorites || []).slice(),
+            show_conflict_crns: (s.show_conflict_crns || []).slice()
+        })),
+        active_schedule: config.active_schedule || 0
+    };
 }
 
-// Load a workspace's selections into the top-level fields (defaults if absent).
+// Load a workspace into the top-level fields (defaults if absent).
 function loadWorkspace() {
     if (!config.workspaces || typeof config.workspaces !== "object") config.workspaces = {};
-    const ws = config.workspaces[workspaceKey()] || workspaceDefaults();
-    const defs = workspaceDefaults();
-    for (const k of WORKSPACE_KEYS) {
-        config[k] = Array.isArray(ws[k]) ? ws[k].slice() : defs[k];
-    }
+    const ws = normalizeWorkspace(config.workspaces[workspaceKey()]);
+    config.prefixes = ws.prefixes;
+    config.prefix_presets = ws.prefix_presets;
+    config.course_excludes = ws.course_excludes;
+    config.schedules = ws.schedules;
+    config.active_schedule = ws.active_schedule;
+    loadActiveSchedule();
 }
 
 // One-time migration: configs saved before workspaces existed keep their
@@ -212,7 +320,7 @@ function loadWorkspace() {
 // is lost when upgrading.
 function migrateLegacyWorkspace() {
     if (!config.workspaces || typeof config.workspaces !== "object") config.workspaces = {};
-    if (config.workspaces[workspaceKey()]) return; // already migrated / native
+    if (config.workspaces[workspaceKey()]) return; // already has a workspace (any format)
     const hasPrefixSel = Array.isArray(config.prefixes)
         && !(config.prefixes.length === 1 && config.prefixes[0] === "*");
     const hasLegacy = ["courses", "favorites", "course_excludes", "show_conflict_crns",
@@ -302,10 +410,12 @@ function normalizeWashU(raw) {
             "Cap": c["seats"] || "",
             "_department": c["department"] || "",
             "_delivery": c["delivery"] || "",
+            "_class": c["class"] || "",
             "_school": decodeURIComponent((c["school"] || "").replace(/\+/g, " "))
         };
     }
-    return { normalizedClasses, schema: { showCRN: false } };
+    // grouped: render sections under a single per-course header in the results table.
+    return { normalizedClasses, schema: { showCRN: false, grouped: true } };
 }
 
 // --------------------------------------------------------------------------
@@ -319,9 +429,9 @@ async function propagateWebpage() {
         excludeHTML += `<div class="flex items-center justify-between gap-2">
             <label class="text-sm text-slate-600 dark:text-slate-300 w-10">${dayShort[i]}</label>
             <div class="flex items-center gap-1.5 text-sm">
-                <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="schedule_exclude_${i}_pre" type="time" value="${config[`schedule_exclude_${i}_pre`]}">
+                <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="schedule_exclude_${i}_pre" type="time" value="${config[`schedule_exclude_${i}_pre`]}">
                 <span class="text-slate-400">–</span>
-                <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="schedule_exclude_${i}_post" type="time" value="${config[`schedule_exclude_${i}_post`]}">
+                <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="schedule_exclude_${i}_post" type="time" value="${config[`schedule_exclude_${i}_post`]}">
             </div>
         </div>`;
     }
@@ -333,6 +443,7 @@ async function propagateWebpage() {
     buildPrefixList();
 
     // Restore scalar inputs
+    document.getElementById("min_level").value = config.min_level;
     document.getElementById("max_level").value = config.max_level;
     document.getElementById("margin_time").value = config.margin_time;
     document.getElementById("dynamic_times").checked = config.dynamic_times;
@@ -342,6 +453,7 @@ async function propagateWebpage() {
     document.querySelectorAll(".collapse_toggle").forEach(applyCollapseState);
 
     // Event listeners (attached once at startup)
+    document.getElementById("min_level").addEventListener("input", handleValueChange);
     document.getElementById("max_level").addEventListener("input", handleValueChange);
     document.getElementById("margin_time").addEventListener("input", handleValueChange);
     document.getElementById("dynamic_times").addEventListener("change", handleValueChange);
@@ -378,12 +490,16 @@ async function propagateWebpage() {
     document.getElementById("compare_toggle").addEventListener("click", toggleCompareStarred);
     applyCompareToggleState();
 
+    // Master "show conflicting classes" toggle (applies to all saved courses)
+    document.getElementById("conflicts_master_toggle").addEventListener("click", toggleAllShowConflicts);
+
     // Prefix presets (save / restore / rename / delete)
     document.getElementById("prefixes_save").addEventListener("click", savePrefixPreset);
     renderPrefixPresets();
 
-    // Schedule presets (save / restore / rename / delete / clear)
-    document.getElementById("schedule_save").addEventListener("click", saveSchedulePreset);
+    // Schedules (new / duplicate / clear; switch & rename & delete wired per-pill)
+    document.getElementById("schedule_new").addEventListener("click", newSchedule);
+    document.getElementById("schedule_duplicate").addEventListener("click", duplicateSchedule);
     document.getElementById("schedule_clear_btn").addEventListener("click", clearSchedule);
     renderSchedulePresets();
 
@@ -419,6 +535,8 @@ async function propagateWebpage() {
     });
 
     initTooltips();
+    initSectionPopover();
+    window.addEventListener("resize", syncResultsHeight);
 
     calculateSchedule();
 
@@ -440,8 +558,8 @@ function setActiveTab(tab) {
         btn.classList.toggle("bg-white", active);
         btn.classList.toggle("dark:bg-slate-900", active);
         btn.classList.toggle("shadow-sm", active);
-        btn.classList.toggle("text-indigo-600", active);
-        btn.classList.toggle("dark:text-indigo-300", active);
+        btn.classList.toggle("text-accent-600", active);
+        btn.classList.toggle("dark:text-accent-300", active);
         btn.classList.toggle("text-slate-500", !active);
         btn.classList.toggle("dark:text-slate-400", !active);
     });
@@ -460,8 +578,8 @@ function applyCompareToggleState() {
     const btn = document.getElementById("compare_toggle");
     const on = !!config.compare_starred;
     btn.setAttribute("aria-pressed", on ? "true" : "false");
-    btn.classList.toggle("bg-indigo-600", on);
-    btn.classList.toggle("border-indigo-600", on);
+    btn.classList.toggle("bg-accent-600", on);
+    btn.classList.toggle("border-accent-600", on);
     btn.classList.toggle("text-white", on);
     btn.classList.toggle("border-slate-200", !on);
     btn.classList.toggle("dark:border-slate-700", !on);
@@ -546,7 +664,7 @@ function renderPrefixPresets(animateIdx = -1) {
         <span class="preset_pill group relative inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 pl-2 pr-1 py-1 ${i === animateIdx ? "animate-pop" : ""}">
             <button class="preset_restore btn-press text-xs font-medium text-slate-700 dark:text-slate-200 max-w-[9rem] truncate" data-idx="${i}" title="Restore (${p.prefixes.length} prefixes · level ${p.max_level})">${escapeHtml(p.name)}</button>
             <span class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                <button class="preset_rename grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-indigo-500" data-idx="${i}" title="Rename">
+                <button class="preset_rename grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-accent-500" data-idx="${i}" title="Rename">
                     <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m16.5 3.5 4 4L7 21H3v-4L16.5 3.5Z"/></svg>
                 </button>
                 <button class="preset_delete grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-red-500" data-idx="${i}" title="Delete">
@@ -632,7 +750,7 @@ function buildSchoolTermUI() {
     termLabel.textContent = termDisplayName(config.term);
 
     schoolMenu.innerHTML = Object.keys(classfilesData).map(s =>
-        `<button class="school_item w-full text-left px-3 py-1.5 text-sm transition-colors ${s === config.school ? "font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10" : "text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"}" data-school="${escapeAttr(s)}">${escapeHtml(s)}</button>`
+        `<button class="school_item w-full text-left px-3 py-1.5 text-sm transition-colors ${s === config.school ? "font-semibold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10" : "text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"}" data-school="${escapeAttr(s)}">${escapeHtml(s)}</button>`
     ).join("");
 
     refreshTermDropdown();
@@ -666,10 +784,10 @@ function buildSchoolTermUI() {
         schoolMenu.querySelectorAll(".school_item").forEach(b => {
             const active = b.dataset.school === newSchool;
             b.classList.toggle("font-semibold", active);
-            b.classList.toggle("text-indigo-600", active);
-            b.classList.toggle("dark:text-indigo-400", active);
-            b.classList.toggle("bg-indigo-50", active);
-            b.classList.toggle("dark:bg-indigo-500/10", active);
+            b.classList.toggle("text-accent-600", active);
+            b.classList.toggle("dark:text-accent-400", active);
+            b.classList.toggle("bg-accent-50", active);
+            b.classList.toggle("dark:bg-accent-500/10", active);
             b.classList.toggle("hover:bg-slate-50", !active);
             b.classList.toggle("dark:hover:bg-slate-800", !active);
         });
@@ -691,10 +809,10 @@ function buildSchoolTermUI() {
         termMenu.querySelectorAll(".term_item").forEach(b => {
             const active = b.dataset.term === newTerm;
             b.classList.toggle("font-semibold", active);
-            b.classList.toggle("text-indigo-600", active);
-            b.classList.toggle("dark:text-indigo-400", active);
-            b.classList.toggle("bg-indigo-50", active);
-            b.classList.toggle("dark:bg-indigo-500/10", active);
+            b.classList.toggle("text-accent-600", active);
+            b.classList.toggle("dark:text-accent-400", active);
+            b.classList.toggle("bg-accent-50", active);
+            b.classList.toggle("dark:bg-accent-500/10", active);
             b.classList.toggle("hover:bg-slate-50", !active);
             b.classList.toggle("dark:hover:bg-slate-800", !active);
         });
@@ -710,7 +828,7 @@ function refreshTermDropdown() {
     const terms = Object.keys(schoolEntry).filter(k => !k.startsWith("_"))
         .sort((a, b) => termSortKey(b) - termSortKey(a));
     termMenu.innerHTML = terms.map(t =>
-        `<button class="term_item w-full text-left px-3 py-1.5 text-sm transition-colors ${t === config.term ? "font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10" : "text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"}" data-term="${escapeAttr(t)}">${escapeHtml(termDisplayName(t))}</button>`
+        `<button class="term_item w-full text-left px-3 py-1.5 text-sm transition-colors ${t === config.term ? "font-semibold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10" : "text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"}" data-term="${escapeAttr(t)}">${escapeHtml(termDisplayName(t))}</button>`
     ).join("");
     if (termLabel) termLabel.textContent = termDisplayName(config.term);
 }
@@ -720,6 +838,7 @@ async function switchSchoolTerm(school, term) {
     config.school = school;
     config.term = term;
     loadWorkspace();                 // restore (or default) the target workspace
+    applyAccent(school);             // accent can differ per school
     await loadSchoolData(school, term);
     config.search_bar = "";
     document.getElementById("search_bar").value = "";
@@ -754,7 +873,7 @@ function buildPrefixList() {
             ? `<span class="tip-trigger cursor-help text-slate-600 dark:text-slate-300" data-tip="${escapeAttr(name)}">${prefix}</span>`
             : `<span class="text-slate-600 dark:text-slate-300">${prefix}</span>`;
         return `<label class="prefix_row flex items-center gap-2 text-sm cursor-pointer select-none" data-search="${escapeAttr(search)}">
-            <input ${config.prefixes.includes(prefix) ? "checked" : ""} type="checkbox" class="prefix_toggle h-3.5 w-3.5 rounded accent-indigo-600" id="prefix_toggle_${prefix}">
+            <input ${config.prefixes.includes(prefix) ? "checked" : ""} type="checkbox" class="prefix_toggle h-3.5 w-3.5 rounded accent-accent-600" id="prefix_toggle_${prefix}">
             ${labelSpan}
         </label>`;
     }).join("");
@@ -778,66 +897,103 @@ function renderTableHeader() {
         ${courseTh}
         <th class="px-3 py-2.5 font-semibold text-left">Title</th>
         <th class="px-3 py-2.5 font-semibold text-left w-16">Days</th>
-        <th class="px-3 py-2.5 font-semibold text-left w-48">Time</th>
-        <th class="px-2 py-2.5 font-semibold text-center w-10">Loc</th>
-        <th class="px-3 py-2.5 font-semibold text-left w-32">Instructor</th>
-        <th class="px-3 py-2.5 font-semibold text-center w-16">Cap</th>
+        <th class="px-3 py-2.5 font-semibold text-left w-44">Time</th>
+        <th class="px-3 py-2.5 font-semibold text-left w-40">Instructor</th>
+        <th class="px-2 py-2.5 font-semibold text-center w-20">Cap</th>
     </tr>`;
 }
 
 // --------------------------------------------------------------------------
-// Saved schedule presets (save / restore / rename / delete / clear)
+// Schedules — each is a live workspace (its own courses / starred / conflicts).
+// The active schedule is mirrored into config.courses/favorites/show_conflict_crns.
 // --------------------------------------------------------------------------
 
-function saveSchedulePreset() {
-    if (!Array.isArray(config.schedule_presets)) config.schedule_presets = [];
-    let n = config.schedule_presets.length + 1;
-    const used = new Set(config.schedule_presets.map(p => p.name));
-    while (used.has(`Schedule ${n}`)) n++;
-    config.schedule_presets.push({
-        name: `Schedule ${n}`,
-        courses: config.courses.slice(),
-        show_conflict_crns: (config.show_conflict_crns || []).slice()
-    });
+function nextScheduleName(base = "Schedule") {
+    const used = new Set((config.schedules || []).map(s => s.name));
+    let n = (config.schedules || []).length + 1;
+    while (used.has(`${base} ${n}`)) n++;
+    return `${base} ${n}`;
+}
+
+// Create a fresh, empty schedule and switch to it.
+function newSchedule() {
+    syncActiveSchedule();
+    config.schedules.push(blankSchedule(nextScheduleName()));
+    config.active_schedule = config.schedules.length - 1;
+    loadActiveSchedule();
     saveConfig();
-    renderSchedulePresets(config.schedule_presets.length - 1);
+    renderSchedulePresets(config.active_schedule);
+    calculateSchedule();
+    refreshResults();
+}
+
+// Copy the active schedule into a new one and switch to it.
+function duplicateSchedule() {
+    syncActiveSchedule();
+    const cur = config.schedules[config.active_schedule] || blankSchedule();
+    config.schedules.push({
+        name: nextScheduleName("Schedule"),
+        courses: (cur.courses || []).slice(),
+        favorites: (cur.favorites || []).slice(),
+        show_conflict_crns: (cur.show_conflict_crns || []).slice()
+    });
+    config.active_schedule = config.schedules.length - 1;
+    loadActiveSchedule();
+    saveConfig();
+    renderSchedulePresets(config.active_schedule);
+    calculateSchedule();
+    refreshResults();
+}
+
+function switchSchedule(idx) {
+    if (idx === config.active_schedule || !config.schedules[idx]) return;
+    syncActiveSchedule();           // persist the schedule we're leaving
+    config.active_schedule = idx;
+    loadActiveSchedule();
+    saveConfig();
+    renderSchedulePresets();
+    calculateSchedule();
+    refreshResults();
 }
 
 function renderSchedulePresets(animateIdx = -1) {
     const wrap = document.getElementById("schedule_presets");
     if (!wrap) return;
-    const presets = Array.isArray(config.schedule_presets) ? config.schedule_presets : [];
-    wrap.innerHTML = presets.map((p, i) => `
-        <span class="sched_preset_pill group relative inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 pl-2 pr-1 py-1 ${i === animateIdx ? "animate-pop" : ""}">
-            <button class="sched_restore btn-press text-xs font-medium text-slate-700 dark:text-slate-200 max-w-[9rem] truncate" data-idx="${i}" title="Load ${escapeAttr(p.name)} (${p.courses.length} course${p.courses.length === 1 ? '' : 's'})">${escapeHtml(p.name)}</button>
+    const schedules = Array.isArray(config.schedules) ? config.schedules : [];
+    const active = config.active_schedule || 0;
+    wrap.innerHTML = schedules.map((p, i) => {
+        const isActive = i === active;
+        const count = savedCourseSummary(p.courses).classCount;
+        const pillCls = isActive
+            ? "border-accent-400 bg-accent-50 dark:border-accent-500/50 dark:bg-accent-500/10"
+            : "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600";
+        const labelCls = isActive
+            ? "text-accent-700 dark:text-accent-300"
+            : "text-slate-700 dark:text-slate-200";
+        const dot = isActive
+            ? `<span class="h-1.5 w-1.5 rounded-full bg-accent-500 shrink-0"></span>` : "";
+        return `
+        <span class="sched_preset_pill group relative inline-flex items-center gap-1.5 rounded-md border ${pillCls} pl-2 pr-1 py-1 transition-colors ${i === animateIdx ? "animate-pop" : ""}">
+            ${dot}
+            <button class="sched_restore btn-press text-xs font-medium ${labelCls} max-w-[9rem] truncate" data-idx="${i}" title="Switch to ${escapeAttr(p.name)} (${count} course${count === 1 ? '' : 's'})">${escapeHtml(p.name)}</button>
             <span class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                <button class="sched_rename grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-indigo-500" data-idx="${i}" title="Rename">
+                <button class="sched_rename grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-accent-500" data-idx="${i}" title="Rename">
                     <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m16.5 3.5 4 4L7 21H3v-4L16.5 3.5Z"/></svg>
                 </button>
                 <button class="sched_delete grid place-items-center h-4 w-4 rounded text-slate-400 hover:text-red-500" data-idx="${i}" title="Delete">
                     <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
                 </button>
             </span>
-        </span>`).join("");
+        </span>`;
+    }).join("");
 
-    wrap.querySelectorAll(".sched_restore").forEach(b => b.addEventListener("click", () => restoreSchedulePreset(+b.dataset.idx)));
-    wrap.querySelectorAll(".sched_rename").forEach(b => b.addEventListener("click", () => renameSchedulePreset(+b.dataset.idx)));
-    wrap.querySelectorAll(".sched_delete").forEach(b => b.addEventListener("click", () => deleteSchedulePreset(+b.dataset.idx)));
+    wrap.querySelectorAll(".sched_restore").forEach(b => b.addEventListener("click", () => switchSchedule(+b.dataset.idx)));
+    wrap.querySelectorAll(".sched_rename").forEach(b => b.addEventListener("click", () => renameSchedule(+b.dataset.idx)));
+    wrap.querySelectorAll(".sched_delete").forEach(b => b.addEventListener("click", () => deleteSchedule(+b.dataset.idx)));
 }
 
-function restoreSchedulePreset(idx) {
-    const p = (config.schedule_presets || [])[idx];
-    if (!p) return;
-    config.courses = p.courses.slice();
-    sortSavedCourses();
-    config.show_conflict_crns = (p.show_conflict_crns || []).slice();
-    saveConfig();
-    calculateSchedule();
-    refreshResults();
-}
-
-function renameSchedulePreset(idx) {
-    const p = (config.schedule_presets || [])[idx];
+function renameSchedule(idx) {
+    const p = (config.schedules || [])[idx];
     if (!p) return;
     const name = window.prompt("Rename schedule:", p.name);
     if (name === null) return;
@@ -847,13 +1003,22 @@ function renameSchedulePreset(idx) {
     renderSchedulePresets();
 }
 
-function deleteSchedulePreset(idx) {
-    const pill = document.querySelectorAll("#schedule_presets .sched_preset_pill")[idx];
+function deleteSchedule(idx) {
+    if (!config.schedules[idx]) return;
     const finish = () => {
-        config.schedule_presets.splice(idx, 1);
+        config.schedules.splice(idx, 1);
+        // Keep at least one schedule around; fix up the active pointer.
+        if (!config.schedules.length) config.schedules = [blankSchedule()];
+        if (config.active_schedule >= config.schedules.length) config.active_schedule = config.schedules.length - 1;
+        else if (idx < config.active_schedule) config.active_schedule--;
+        else if (idx === config.active_schedule) config.active_schedule = Math.min(idx, config.schedules.length - 1);
+        loadActiveSchedule();
         saveConfig();
         renderSchedulePresets();
+        calculateSchedule();
+        refreshResults();
     };
+    const pill = document.querySelectorAll("#schedule_presets .sched_preset_pill")[idx];
     if (pill) {
         pill.classList.add("animate-out");
         setTimeout(finish, 180);
@@ -862,6 +1027,7 @@ function deleteSchedulePreset(idx) {
     }
 }
 
+// Empty the active schedule's courses (keeps its name and starred list).
 function clearSchedule() {
     config.courses = [];
     config.show_conflict_crns = [];
@@ -1102,13 +1268,17 @@ function conflictsWithSchedule(course) {
 
 function refreshResults() {
     const maxLevel = Number.parseInt(config.max_level, 10) || 9;
+    const minLevel = Number.parseInt(config.min_level, 10) || 0;
 
     let result_classes = Object.values(classes).filter(course => {
         const courseId = course["_key"] || course["CRN"];
         if (config.course_excludes.includes(courseId)) return false;       // manually hidden
         if (config.courses.includes(courseId)) return false;               // already added
         const num = Number.parseInt(course["Course"].split(" ")[1], 10);
-        if (!Number.isNaN(num) && Math.floor(num / 1000) > maxLevel) return false;
+        if (!Number.isNaN(num)) {
+            const lvl = Math.floor(num / 1000);
+            if (lvl > maxLevel || lvl < minLevel) return false;
+        }
         if (!config.prefixes.includes(course["Course"].split(" ")[0])) return false;
         if (conflictsWithSchedule(course)) return false;
         return true;
@@ -1120,6 +1290,10 @@ function refreshResults() {
             keys: ["Course", "Title", "Instructor"], minMatchCharLength: 2, threshold: 0.3
         });
         result_classes = fuse.search(config.search_bar).map(r => r.item);
+    } else if (currentSchema.grouped) {
+        // Grouped view: keep every course's sections contiguous and in section order
+        // (favorites stay starred but don't float out of their group).
+        result_classes.sort(courseAndSectionCompare);
     } else {
         // Favorites first, then by course code, when not running a fuzzy search
         result_classes.sort((a, b) => {
@@ -1143,7 +1317,13 @@ function refreshResults() {
         : `${total} class${total === 1 ? "" : "es"}`;
 
     const body = document.getElementById("results-body");
-    body.innerHTML = result_classes.map(course => renderRow(course)).join("");
+    if (currentSchema.grouped) {
+        body.classList.add("grouped");
+        body.innerHTML = renderGroupedBody(result_classes);
+    } else {
+        body.classList.remove("grouped");
+        body.innerHTML = result_classes.map(course => renderRow(course)).join("");
+    }
 
     // Empty state
     const emptyEl = document.getElementById("results-empty");
@@ -1171,10 +1351,36 @@ function refreshResults() {
     // Wire up row + list buttons
     document.querySelectorAll(".add_course_btn, .remove_course_btn, .star_course_btn, .delete_course_btn").forEach(btn =>
         btn.addEventListener("click", handleCourseButtonPress));
+
+    // Grouped (WashU) section controls
+    document.querySelectorAll(".grp_add").forEach(b => b.addEventListener("click", () => addSectionByKey(b.dataset.key)));
+    document.querySelectorAll(".grp_star").forEach(b => b.addEventListener("click", () => starSectionByKey(b.dataset.key)));
+    document.querySelectorAll(".grp_minus").forEach(b => b.addEventListener("click", () => removeSectionsByKeys((b.dataset.keys || "").split(",").filter(Boolean))));
+    document.querySelectorAll(".grp_collapse").forEach(b => b.addEventListener("click", () => toggleGroupCollapse(b.dataset.course, b.dataset.gid, b)));
+    document.querySelectorAll("#results-body [data-secpop]").forEach(el => {
+        el.addEventListener("mouseenter", () => showSectionPop(el));
+        el.addEventListener("mouseleave", scheduleSecPopHide);
+    });
+
     initTooltips();
+    syncResultsHeight();
 
     justAddedCrn = null;
     justStarredCrn = null;
+}
+
+// Keep the results panel at least as tall as the sidebar on side-by-side layouts,
+// so the search/results column is never shorter than the config sidebar.
+function syncResultsHeight() {
+    const scroll = document.getElementById("results-scroll");
+    const aside = document.querySelector("aside");
+    if (!scroll || !aside) return;
+    if (!window.matchMedia("(min-width: 1024px)").matches) {
+        scroll.style.height = "";   // stacked layout: let the CSS max-height handle it
+        return;
+    }
+    const viewportBased = window.innerHeight - 176;   // header + search bar (~11rem)
+    scroll.style.height = `${Math.max(viewportBased, aside.offsetHeight)}px`;
 }
 
 function deliveryIcon(delivery) {
@@ -1183,31 +1389,64 @@ function deliveryIcon(delivery) {
         return `<svg class="h-4 w-4 text-teal-500 dark:text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 0 1 1.06 0Z"/></svg>`;
     }
     if (lower.includes("online") || lower.includes("distance")) {
-        return `<svg class="h-4 w-4 text-indigo-500 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 0 1 1.06 0Z"/></svg>`;
+        return `<svg class="h-4 w-4 text-accent-500 dark:text-accent-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 0 1 1.06 0Z"/></svg>`;
     }
     return `<svg class="h-4 w-4 text-amber-500 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"/></svg>`;
 }
 
-function renderRow(course) {
-    const id = course["_key"] || course["CRN"];
-    const displayCrn = course["CRN"];
-    const starred = config.favorites.includes(id);
+// Physical location pin + room name — only when the class has a named place
+// (e.g. FIT). Lives next to the title.
+function placePinHtml(course) {
+    const placeText = (course["Place"] || "").split("\n")[0];
+    if (!placeText) return "";
+    return `<span class="tip-trigger cursor-help inline-flex items-center text-slate-400 dark:text-slate-500 shrink-0" data-tip="${escapeAttr(placeText)}"><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/></svg></span>`;
+}
 
-    // Title + hoverable description (with any note appended into the tooltip)
+// Compact delivery-mode badge for the minority of non-in-person classes (online,
+// hybrid, distance). Sits next to the section/course code rather than in a
+// location slot, so the majority of in-person rows aren't given an empty icon.
+function deliveryBadgeHtml(course) {
+    const delivery = course["_delivery"] || "";
+    if (!delivery || delivery.toLowerCase() === "in-person") return "";
+    return `<span class="tip-trigger cursor-help inline-flex items-center align-middle shrink-0 ml-1" data-tip="${escapeAttr(delivery)}">${deliveryIcon(delivery)}</span>`;
+}
+
+function capClass(capVal) {
+    const [enrolled, cap] = String(capVal || "").split("/").map(v => Number.parseInt(v.trim(), 10));
+    if (!Number.isNaN(cap) && !Number.isNaN(enrolled) && cap > 0) {
+        const pct = (enrolled / cap) * 100;
+        return pct >= 100 ? "text-red-600 dark:text-red-400 font-semibold"
+            : pct > 75 ? "text-amber-600 dark:text-amber-400 font-medium"
+                : "text-green-600 dark:text-green-400 font-medium";
+    }
+    return "text-slate-500 dark:text-slate-400";
+}
+
+// Cap cell content that never overflows the narrow column: numeric "e/c" is shown
+// as-is; long text (e.g. "Waitlist Available") is shortened with the full value on
+// hover. Always wrapped so it truncates rather than forcing horizontal scroll.
+function capCellHtml(capVal) {
+    const val = String(capVal || "").trim();
+    if (!val) return "";
+    if (/^\d+\s*\/\s*\d+$/.test(val)) {
+        return `<span class="tnum ${capClass(val)}">${escapeHtml(val)}</span>`;
+    }
+    const short = /waitlist/i.test(val) ? "WL" : val;
+    return `<span class="tip-trigger cursor-help block truncate text-sm font-medium text-amber-600 dark:text-amber-400" data-tip="${escapeAttr(val)}">${escapeHtml(short)}</span>`;
+}
+
+function descLineHtml(course) {
     const detailText = course["details"] || "";
     const note = course["Notes"] || "";
-    const tipText = note
-        ? (detailText ? `${detailText}  •  Note: ${note}` : `Note: ${note}`)
-        : detailText;
+    const tipText = note ? (detailText ? `${detailText}  •  Note: ${note}` : `Note: ${note}`) : detailText;
+    if (!tipText) return "";
     const noteBadge = note
         ? `<span class="ml-1 align-middle inline-flex items-center rounded px-1 text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">note</span>`
         : "";
-    const descDisplay = detailText || note;
-    const descLine = tipText
-        ? `<div class="tip-trigger cursor-help text-xs text-slate-400 dark:text-slate-500 truncate leading-snug" data-tip="${escapeAttr(tipText)}">${escapeHtml(descDisplay)}${noteBadge}</div>`
-        : "";
+    return `<div class="tip-trigger cursor-help text-xs text-slate-400 dark:text-slate-500 truncate leading-snug" data-tip="${escapeAttr(tipText)}">${escapeHtml(detailText || note)}${noteBadge}</div>`;
+}
 
-    // Time + Days formatting
+function daysTimeHtml(course) {
     const timeHtml = (course["Times"] || "").split("\n").map(range => {
         const [s, e] = range.split("-");
         const sm = toMinutes(s), em = toMinutes(e);
@@ -1215,25 +1454,18 @@ function renderRow(course) {
         return `${formatMinutes(sm)}&nbsp;–&nbsp;${formatMinutes(em)}`;
     }).join("<br>");
     const daysHtml = escapeHtml(course["Days"] || "").replaceAll("\n", "<br>");
-    const placeText = (course["Place"] || "").split("\n")[0];
-    const delivery = course["_delivery"] || "";
-    let locHtml = "";
-    if (delivery && delivery.toLowerCase() !== "in-person") {
-        locHtml = `<span class="tip-trigger cursor-help inline-flex items-center justify-center" data-tip="${escapeAttr(delivery)}">${deliveryIcon(delivery)}</span>`;
-    } else if (placeText) {
-        locHtml = `<span class="tip-trigger cursor-help inline-flex items-center text-slate-400 dark:text-slate-500" data-tip="${escapeAttr(placeText)}"><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/></svg></span>`;
-    }
+    return { timeHtml, daysHtml };
+}
 
-    // Cap colouring
+// A plain (non-grouped) row: FIT classes and single-section WashU courses.
+function renderRow(course) {
+    const id = course["_key"] || course["CRN"];
+    const displayCrn = course["CRN"];
+    const starred = config.favorites.includes(id);
+    const { timeHtml, daysHtml } = daysTimeHtml(course);
+    const pinHtml = placePinHtml(course);
+    const deliveryHtml = deliveryBadgeHtml(course);
     const capVal = course["Cap"] || "";
-    const [enrolled, cap] = capVal.split("/").map(v => Number.parseInt(v.trim(), 10));
-    let capCls = "text-slate-500 dark:text-slate-400";
-    if (!Number.isNaN(cap) && !Number.isNaN(enrolled) && cap > 0) {
-        const pct = (enrolled / cap) * 100;
-        capCls = pct >= 100 ? "text-red-600 dark:text-red-400 font-semibold"
-            : pct > 75 ? "text-amber-600 dark:text-amber-400 font-medium"
-                : "text-green-600 dark:text-green-400 font-medium";
-    }
 
     return `<tr>
         <td class="px-2 py-1.5 text-center align-middle">
@@ -1244,30 +1476,317 @@ function renderRow(course) {
                 <button class="add_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-green-500/50 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-600 hover:text-white hover:border-green-600" id="add_course_${id}" title="Add to schedule">
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></svg>
                 </button>
-                <button class="remove_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-red-500/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white hover:border-red-600" id="remove_course_${id}" title="Hide this section  (Shift-click: hide all sections of ${escapeAttr(course["Course"] || "this course")})">
+                <button class="remove_course_btn tip-trigger btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-red-500/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white hover:border-red-600" id="remove_course_${id}" data-tip="Hide this section" data-tip-shift="Hide all ${escapeAttr(course["Course"] || "matching")} sections">
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14"/></svg>
                 </button>
             </span>
         </td>
-        ${currentSchema.showCRN ? `<td class="px-3 py-1.5 align-top whitespace-nowrap">
+        ${currentSchema.showCRN
+        ? `<td class="px-3 py-1.5 align-top whitespace-nowrap">
             <div class="font-mono tnum text-xs text-slate-500 dark:text-slate-400 leading-tight">${escapeHtml(displayCrn)}</div>
             <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500">${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
         </td>
-        <td class="px-3 py-1.5 align-top font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}</td>`
+        <td class="px-3 py-1.5 align-top font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}${deliveryHtml}</td>`
         : `<td class="px-3 py-1.5 align-top whitespace-nowrap">
-            <div class="font-semibold text-slate-800 dark:text-slate-100 leading-tight">${escapeHtml(course["Course"] || "")}</div>
+            <div class="font-semibold text-slate-800 dark:text-slate-100 leading-tight">${escapeHtml(course["Course"] || "")}${deliveryHtml}</div>
             <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500">Sec ${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
         </td>`}
         <td class="px-3 py-1.5 align-top overflow-hidden">
-            <div class="font-medium text-slate-800 dark:text-slate-100 leading-snug truncate">${escapeHtml(course["Title"] || "")}</div>
-            ${descLine}
+            <div class="flex items-center gap-1.5 min-w-0">
+                <div class="font-medium text-slate-800 dark:text-slate-100 leading-snug truncate">${escapeHtml(course["Title"] || "")}</div>
+                ${pinHtml}
+            </div>
+            ${descLineHtml(course)}
         </td>
         <td class="px-3 py-1.5 align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap">${daysHtml}</td>
         <td class="px-3 py-1.5 align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap">${timeHtml}</td>
-        <td class="px-2 py-1.5 align-middle text-center">${locHtml}</td>
-        <td class="px-3 py-1.5 align-top text-slate-600 dark:text-slate-300"><div class="max-w-[10rem] truncate">${escapeHtml(course["Instructor"] || "")}</div></td>
-        <td class="px-3 py-1.5 align-middle text-center tnum ${capCls}">${escapeHtml(capVal)}</td>
+        <td class="px-3 py-1.5 align-top text-slate-600 dark:text-slate-300"><div class="max-w-[12rem] truncate">${escapeHtml(course["Instructor"] || "")}</div></td>
+        <td class="px-2 py-1.5 align-middle text-center overflow-hidden">${capCellHtml(capVal)}</td>
     </tr>`;
+}
+
+// --------------------------------------------------------------------------
+// Grouped course rendering (WashU): sections live under a course header, with
+// identical sections (same days/time/instructor) merged into one annotated row.
+// --------------------------------------------------------------------------
+
+const collapsedCourses = new Set();      // course codes currently collapsed (transient)
+let sectionPopRegistry = {};             // popover id -> { course, members[] }
+let sectionPopSeq = 0;
+
+function sectionKindOf(sec) {
+    return /^[A-Za-z]/.test(String(sec || "").trim()) ? "alpha" : "num";
+}
+
+function parseSeats(v) {
+    const p = String(v || "").split("/");
+    const e = Number.parseInt(p[0], 10), c = Number.parseInt(p[1], 10);
+    if (Number.isNaN(e) || Number.isNaN(c)) return null;
+    return { enrolled: e, cap: c, open: Math.max(0, c - e), full: e >= c };
+}
+
+// First section with open seats, else the first section.
+function pickDefaultKey(members) {
+    const open = members.find(m => { const s = parseSeats(m["Cap"]); return s && !s.full; });
+    return (open || members[0])["_key"];
+}
+
+function registerSectionPop(course, members) {
+    const id = "sp" + (sectionPopSeq++);
+    sectionPopRegistry[id] = { course, members };
+    return id;
+}
+
+// Merge sections that share days + times + instructor.
+function mergeIdentical(list) {
+    const m = new Map();
+    for (const s of list) {
+        const k = `${s["Days"]}|${s["Times"]}|${s["Instructor"]}`;
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(s);
+    }
+    return [...m.values()];
+}
+
+function starBtnHtml(defKey, popId, starred, extra = "") {
+    return `<button class="grp_star btn-press text-lg leading-none ${starred ? "text-amber-400" : "text-slate-300 dark:text-slate-600 hover:text-amber-400"}" data-key="${escapeAttr(defKey)}" data-secpop="${popId}" title="Star a section ${extra}(hover to choose)">${starred ? "★" : "☆"}</button>`;
+}
+
+function addMinusHtml(defKey, allKeys, popId, removeTip) {
+    return `<span class="inline-flex gap-2">
+        <button class="grp_add btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-green-500/50 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-600 hover:text-white hover:border-green-600" data-key="${escapeAttr(defKey)}" data-secpop="${popId}" title="Add a section (hover to choose one)">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button class="grp_minus tip-trigger btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-red-500/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white hover:border-red-600" data-keys="${escapeAttr(allKeys)}" data-tip="${escapeAttr(removeTip)}">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14"/></svg>
+        </button>
+    </span>`;
+}
+
+// Header bar above a course's grouped sections, with its own add/star/minus.
+function renderGroupHeader(course, allSections, gid) {
+    const collapsed = collapsedCourses.has(course["Course"]);
+    const popId = registerSectionPop(course["Course"], allSections);
+    const defKey = pickDefaultKey(allSections);
+    const allKeys = allSections.map(s => s["_key"]).join(",");
+    const starred = allSections.some(s => config.favorites.includes(s["_key"]));
+    const detail = course["details"] || "";
+    const descLine = detail
+        ? `<div class="tip-trigger cursor-help text-xs text-slate-500 dark:text-slate-400 truncate leading-snug mt-0.5" data-tip="${escapeAttr(detail)}">${escapeHtml(detail)}</div>`
+        : `<div class="text-xs text-slate-400 dark:text-slate-500 mt-0.5">${escapeHtml(course["Cr"] || "—")} credits · ${allSections.length} sections offered</div>`;
+    const chevron = `<svg class="h-4 w-4 text-slate-400 transition-transform ${collapsed ? "-rotate-90" : ""}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>`;
+    const tabBorder = collapsed ? "border-accent-500/40" : "border-accent-500";
+    return `<tr class="wgroup-header" data-group-header="${gid}">
+        <td class="grp_tab border-l-2 ${tabBorder} px-2 py-1.5 text-center align-middle">${starBtnHtml(defKey, popId, starred, "of " + escapeAttr(course["Course"]) + " ")}</td>
+        <td class="px-2 py-1.5 text-center align-middle whitespace-nowrap">${addMinusHtml(defKey, allKeys, popId, `Hide all ${course["Course"]} sections`)}</td>
+        <td colspan="6" class="px-2 py-1.5 align-middle">
+            <div class="flex items-center gap-2.5 min-w-0">
+                <button class="grp_collapse btn-press grid place-items-center h-6 w-6 rounded-md hover:bg-accent-100/60 dark:hover:bg-accent-500/15 shrink-0" data-course="${escapeAttr(course["Course"])}" data-gid="${gid}" title="Collapse / expand">${chevron}</button>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-baseline gap-2 min-w-0">
+                        <span class="font-semibold text-sm text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}</span>
+                        <span class="text-sm text-slate-600 dark:text-slate-300 truncate">${escapeHtml(course["Title"] || "")}</span>
+                        <span class="text-[11px] font-medium text-accent-600 dark:text-accent-400 whitespace-nowrap shrink-0">${allSections.length} sections</span>
+                    </div>
+                    ${descLine}
+                </div>
+            </div>
+        </td>
+    </tr>`;
+}
+
+// A merged section row (represents one or more identical sections).
+function renderMergedSectionRow(members, gid, course, collapsed) {
+    const rep = members[0];
+    const count = members.length;
+    const popId = registerSectionPop(course, members);
+    const defKey = pickDefaultKey(members);
+    const allKeys = members.map(m => m["_key"]).join(",");
+    const starred = members.some(m => config.favorites.includes(m["_key"]));
+    const { timeHtml, daysHtml } = daysTimeHtml(rep);
+    const pinHtml = placePinHtml(rep);
+    const deliveryHtml = deliveryBadgeHtml(rep);
+
+    const moreBadge = count > 1
+        ? `<span class="ml-1 inline-flex items-center rounded px-1 text-[10px] font-semibold bg-accent-100 text-accent-700 dark:bg-accent-500/20 dark:text-accent-300">×${count}</span>` : "";
+    const secCell = `<span class="font-mono font-bold text-sm text-slate-700 dark:text-slate-200">${escapeHtml(rep["Section"] || "—")}</span>${moreBadge}<span class="font-mono text-[11px] text-slate-400 dark:text-slate-500 ml-1.5">${escapeHtml(rep["Cr"] || "—")}cr</span>${deliveryHtml}`;
+
+    // Cap: a single section shows its seats; a merged set shows total open seats.
+    let capCell;
+    if (count > 1) {
+        const open = members.reduce((a, m) => { const s = parseSeats(m["Cap"]); return a + (s ? s.open : 0); }, 0);
+        capCell = open > 0
+            ? `<span class="tnum text-green-600 dark:text-green-400 font-medium">${open} open</span>`
+            : `<span class="tnum text-red-600 dark:text-red-400 font-semibold">Full</span>`;
+    } else {
+        capCell = capCellHtml(rep["Cap"]);
+    }
+    const multi = count > 1;
+    const popData = multi ? ` data-secpop="${popId}"` : "";
+    const helpCls = multi ? " cursor-help" : "";
+
+    return `<tr class="wsection${collapsed ? " hidden" : ""}" data-group="${gid}">
+        <td class="px-2 py-2 text-center align-middle">${starBtnHtml(defKey, popId, starred)}</td>
+        <td class="px-2 py-2 text-center align-middle whitespace-nowrap">${addMinusHtml(defKey, allKeys, popId, multi ? `Hide all ${count} sections` : "Hide this section")}</td>
+        <td class="px-3 py-2 align-middle whitespace-nowrap${helpCls}"${popData}>${secCell}</td>
+        <td colspan="2" class="px-3 py-2 align-middle">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="font-mono tnum text-slate-600 dark:text-slate-300 font-semibold shrink-0">${daysHtml || "—"}</span>
+                <span class="font-mono tnum text-slate-500 dark:text-slate-400 truncate">${timeHtml || "—"}</span>
+                ${pinHtml}
+            </div>
+        </td>
+        <td colspan="2" class="px-3 py-2 align-middle text-slate-600 dark:text-slate-300"><div class="truncate">${escapeHtml(rep["Instructor"] || "")}</div></td>
+        <td class="px-2 py-2 align-middle text-center overflow-hidden${helpCls}"${popData}>${capCell}</td>
+    </tr>`;
+}
+
+function renderSectionDivider(gid, collapsed) {
+    return `<tr class="wdivider${collapsed ? " hidden" : ""}" data-group="${gid}">
+        <td colspan="8" class="px-3 py-1">
+            <div class="h-px w-full bg-accent-300/60 dark:bg-accent-500/30"></div>
+        </td>
+    </tr>`;
+}
+
+// Build the results body: group same-course sections under a header, split into
+// numeric/lettered blocks, and merge identical sections.
+function renderGroupedBody(result_classes) {
+    sectionPopRegistry = {};
+    sectionPopSeq = 0;
+    const groups = new Map();
+    for (const c of result_classes) {
+        const key = c["Course"] || "";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(c);
+    }
+    let html = "";
+    let gidSeq = 0;
+    for (const secs of groups.values()) {
+        if (secs.length === 1) { html += renderRow(secs[0]); continue; }
+        const gid = "g" + (gidSeq++);
+        const courseCode = secs[0]["Course"];
+        const collapsed = collapsedCourses.has(courseCode);
+        const nums = secs.filter(s => sectionKindOf(s["Section"]) === "num");
+        const alphas = secs.filter(s => sectionKindOf(s["Section"]) === "alpha");
+        const numMerged = mergeIdentical(nums);
+        const alphaMerged = mergeIdentical(alphas);
+        html += renderGroupHeader(secs[0], secs, gid);
+        for (const m of numMerged) html += renderMergedSectionRow(m, gid, courseCode, collapsed);
+        if (numMerged.length && alphaMerged.length) html += renderSectionDivider(gid, collapsed);
+        for (const m of alphaMerged) html += renderMergedSectionRow(m, gid, courseCode, collapsed);
+    }
+    return html;
+}
+
+// --- Grouped interactions: section popover + per-section add/star/minus -------
+
+function renderSectionPopContent(course, members) {
+    const rows = members.map(m => {
+        const seats = m["Cap"] || "";
+        const isStar = config.favorites.includes(m["_key"]);
+        const isAdded = config.courses.includes(m["_key"]);
+        const { timeHtml, daysHtml } = daysTimeHtml(m);
+        return `<div class="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800/60">
+            <span class="font-mono font-bold text-xs w-7 shrink-0 text-slate-700 dark:text-slate-200">${escapeHtml(m["Section"] || "—")}</span>
+            <span class="text-[11px] text-slate-500 dark:text-slate-400 flex-1 min-w-0 truncate">${daysHtml} ${timeHtml}</span>
+            <span class="font-mono text-[11px] ${capClass(seats)} shrink-0">${escapeHtml(seats)}</span>
+            <button class="pop_star btn-press text-base leading-none ${isStar ? "text-amber-400" : "text-slate-300 dark:text-slate-600 hover:text-amber-400"}" data-key="${escapeAttr(m["_key"])}" title="Star this section">${isStar ? "★" : "☆"}</button>
+            <button class="pop_add btn-press inline-grid place-items-center h-5 w-5 rounded border ${isAdded ? "border-green-600 bg-green-600 text-white" : "border-green-500/50 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-600 hover:text-white"}" data-key="${escapeAttr(m["_key"])}" title="${isAdded ? "Added" : "Add this section"}">
+                <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></svg>
+            </button>
+        </div>`;
+    }).join("");
+    return `<div class="px-3 py-2 border-b border-slate-100 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200">${escapeHtml(course)} · ${members.length} section${members.length === 1 ? "" : "s"}</div>
+        <div class="p-1 max-h-64 overflow-auto">${rows}</div>`;
+}
+
+let secPopHideTimer = null;
+
+function positionFloating(el, anchor) {
+    const r = anchor.getBoundingClientRect();
+    const tr = el.getBoundingClientRect();
+    let left = r.left + r.width / 2 - tr.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
+    let top = r.bottom + 8;
+    if (top + tr.height > window.innerHeight - 8) top = Math.max(8, r.top - tr.height - 8);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+}
+
+function showSectionPop(triggerEl) {
+    const entry = sectionPopRegistry[triggerEl.dataset.secpop];
+    if (!entry) return;
+    clearTimeout(secPopHideTimer);
+    const pop = document.getElementById("section-popover");
+    pop.innerHTML = renderSectionPopContent(entry.course, entry.members);
+    pop.classList.add("visible");
+    positionFloating(pop, triggerEl);
+}
+
+function scheduleSecPopHide() {
+    clearTimeout(secPopHideTimer);
+    secPopHideTimer = setTimeout(hideSectionPop, 220);
+}
+
+function hideSectionPop() {
+    const p = document.getElementById("section-popover");
+    if (p) p.classList.remove("visible");
+}
+
+function initSectionPopover() {
+    const pop = document.getElementById("section-popover");
+    if (!pop || pop.dataset.bound) return;
+    pop.dataset.bound = "1";
+    pop.addEventListener("mouseenter", () => clearTimeout(secPopHideTimer));
+    pop.addEventListener("mouseleave", scheduleSecPopHide);
+    pop.addEventListener("click", e => {
+        const add = e.target.closest(".pop_add");
+        const star = e.target.closest(".pop_star");
+        if (add) addSectionByKey(add.dataset.key);
+        else if (star) starSectionByKey(star.dataset.key);
+    });
+}
+
+function addSectionByKey(key) {
+    if (!key) return;
+    if (!config.courses.includes(key)) config.courses.push(key);
+    config.course_excludes = (config.course_excludes || []).filter(c => c !== key);
+    justAddedCrn = key;
+    hideSectionPop();
+    calculateSchedule();
+    saveConfig();
+    refreshResults();
+}
+
+function starSectionByKey(key) {
+    if (!key) return;
+    if (config.favorites.includes(key)) config.favorites = config.favorites.filter(c => c !== key);
+    else { config.favorites.push(key); justStarredCrn = key; }
+    saveConfig();
+    refreshResults();
+}
+
+function removeSectionsByKeys(keys) {
+    for (const k of keys) if (k && !config.course_excludes.includes(k)) config.course_excludes.push(k);
+    hideSectionPop();
+    saveConfig();
+    refreshResults();
+}
+
+function toggleGroupCollapse(courseCode, gid, btn) {
+    if (collapsedCourses.has(courseCode)) collapsedCourses.delete(courseCode);
+    else collapsedCourses.add(courseCode);
+    const collapsed = collapsedCourses.has(courseCode);
+    document.querySelectorAll(`#results-body [data-group="${gid}"]`).forEach(r => r.classList.toggle("hidden", collapsed));
+    const chev = btn.querySelector("svg");
+    if (chev) chev.classList.toggle("-rotate-90", collapsed);
+    // Border tab: muted while collapsed, full accent once opened.
+    const tab = btn.closest("tr")?.querySelector(".grp_tab");
+    if (tab) {
+        tab.classList.toggle("border-accent-500", !collapsed);
+        tab.classList.toggle("border-accent-500/40", collapsed);
+    }
 }
 
 function courseAndSectionCompare(a, b) {
@@ -1280,6 +1799,24 @@ function courseAndSectionCompare(a, b) {
         numeric: true,
         sensitivity: "base"
     });
+}
+
+function courseCountKey(course, fallback) {
+    return (course && course["Course"] ? course["Course"] : fallback || "").trim().toLowerCase();
+}
+
+function savedCourseSummary(ids) {
+    const unique = new Map();
+    for (const id of ids || []) {
+        const course = classes[id];
+        if (!course) continue;
+        const key = courseCountKey(course, id);
+        const credits = parseFloat(course["Cr"]);
+        const creditValue = Number.isNaN(credits) ? 0 : credits;
+        unique.set(key, Math.max(unique.get(key) || 0, creditValue));
+    }
+    const credits = Array.from(unique.values()).reduce((sum, cr) => sum + cr, 0);
+    return { classCount: unique.size, credits };
 }
 
 function sortSavedCourses() {
@@ -1314,8 +1851,21 @@ function renderCoursesList() {
 
     const valid = config.courses.filter(crn => classes[crn])
         .sort((a, b) => courseAndSectionCompare(classes[a], classes[b]));
-    count.textContent = valid.length;
+    const summary = savedCourseSummary(valid);
+    count.textContent = summary.classCount;
     empty.classList.toggle("hidden", valid.length > 0);
+
+    // Master "show conflicting classes" toggle — visible only with saved courses,
+    // checked when every saved course already has conflicts shown.
+    const masterRow = document.getElementById("conflicts_master_row");
+    const masterToggle = document.getElementById("conflicts_master_toggle");
+    if (masterRow && masterToggle) {
+        masterRow.classList.toggle("hidden", valid.length === 0);
+        masterRow.classList.toggle("flex", valid.length > 0);
+        const shown = config.show_conflict_crns || [];
+        const allOn = valid.length > 0 && valid.every(crn => shown.includes(crn));
+        masterToggle.setAttribute("aria-checked", allOn ? "true" : "false");
+    }
 
     for (const crn of valid) {
         const c = classes[crn];
@@ -1342,6 +1892,22 @@ function renderCoursesList() {
 
     list.querySelectorAll(".show_conflict_toggle").forEach(btn =>
         btn.addEventListener("click", () => toggleShowConflict(btn.dataset.crn)));
+}
+
+// Master toggle: turn "show conflicts" on for every saved course, or off for all
+// if they're already all on.
+function toggleAllShowConflicts() {
+    const valid = config.courses.filter(crn => classes[crn]);
+    if (!valid.length) return;
+    const shown = config.show_conflict_crns || [];
+    const allOn = valid.every(crn => shown.includes(crn));
+    if (allOn) {
+        config.show_conflict_crns = shown.filter(c => !valid.includes(c));
+    } else {
+        config.show_conflict_crns = Array.from(new Set([...shown, ...valid]));
+    }
+    saveConfig();
+    refreshResults();
 }
 
 function toggleShowConflict(crn) {
@@ -1611,8 +2177,19 @@ function renderCalendar() {
     }
 
     const countEl = document.getElementById("calendar_count");
-    const nCourses = config.courses.filter(c => classes[c]).length;
+    const added = config.courses.filter(c => classes[c]);
+    const summary = savedCourseSummary(added);
+    const nCourses = summary.classCount;
     if (countEl) countEl.textContent = `${nCourses} class${nCourses === 1 ? "" : "es"}`;
+
+    const creditsEl = document.getElementById("calendar_credits");
+    if (creditsEl) {
+        const totalCr = summary.credits;
+        // Trim a trailing ".0" (e.g. 15 not 15.0) but keep genuine halves (13.5).
+        const crText = Number.isInteger(totalCr) ? String(totalCr) : totalCr.toFixed(1);
+        creditsEl.textContent = `${crText} cr`;
+        creditsEl.classList.toggle("hidden", nCourses === 0);
+    }
 
     if (!isFinite(minM)) {
         container.innerHTML = `<div class="py-10 text-center text-sm text-slate-400 dark:text-slate-500">
@@ -1844,26 +2421,59 @@ function layoutDay(items) {
 // Tooltips (single floating element; never clipped by table overflow)
 // --------------------------------------------------------------------------
 
+let tipHideTimer = null;
+
+function scheduleTipHide(tip) {
+    // Small grace period so the cursor can travel from the trigger onto the tip
+    // (which lets the user select/copy its text) without it vanishing.
+    clearTimeout(tipHideTimer);
+    tipHideTimer = setTimeout(() => {
+        tip.classList.remove("visible");
+        activeTipEl = null;
+    }, 220);
+}
+
 function initTooltips() {
     const tip = document.getElementById("floating-tip");
+
+    // One-time wiring: keep the tip open while hovered, and live-swap Shift text.
+    if (!tip.dataset.hoverBound) {
+        tip.dataset.hoverBound = "1";
+        tip.addEventListener("mouseenter", () => clearTimeout(tipHideTimer));
+        tip.addEventListener("mouseleave", () => scheduleTipHide(tip));
+        document.addEventListener("keydown", e => {
+            if (e.key === "Shift" && !shiftHeld) {
+                shiftHeld = true;
+                if (activeTipEl && activeTipEl.dataset.tipShift) showTip(activeTipEl, tip);
+            }
+        });
+        document.addEventListener("keyup", e => {
+            if (e.key === "Shift" && shiftHeld) {
+                shiftHeld = false;
+                if (activeTipEl && activeTipEl.dataset.tipShift) showTip(activeTipEl, tip);
+            }
+        });
+    }
+
     document.querySelectorAll(".tip-trigger").forEach(el => {
         if (el.dataset.tipBound) return;
         el.dataset.tipBound = "1";
-        el.addEventListener("mouseenter", () => showTip(el, tip));
-        el.addEventListener("mouseleave", () => tip.classList.remove("visible"));
-        el.addEventListener("focus", () => showTip(el, tip));
-        el.addEventListener("blur", () => tip.classList.remove("visible"));
+        el.addEventListener("mouseenter", () => { clearTimeout(tipHideTimer); activeTipEl = el; showTip(el, tip); });
+        el.addEventListener("mouseleave", () => scheduleTipHide(tip));
+        el.addEventListener("focus", () => { clearTimeout(tipHideTimer); activeTipEl = el; showTip(el, tip); });
+        el.addEventListener("blur", () => scheduleTipHide(tip));
     });
 }
 
 function showTip(el, tip) {
     // Rich card (full class details) when data-tip-crn is present, else plain text.
+    // A `data-tip-shift` alternate is shown while Shift is held.
     if (el.dataset.tipCrn) {
         const html = classDetailsHtml(el.dataset.tipCrn);
         if (!html) return;
         tip.innerHTML = html;
     } else {
-        const text = el.dataset.tip;
+        const text = (shiftHeld && el.dataset.tipShift) ? el.dataset.tipShift : el.dataset.tip;
         if (!text) return;
         tip.textContent = text;
     }

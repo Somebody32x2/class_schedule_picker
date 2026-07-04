@@ -18,11 +18,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link href="./output.css?v=20260629c" rel="stylesheet">
+    <link href="./output.css?v=20260630k" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.1.0"></script>
     <title>Schedule Picker</title>
 </head>
-<body class="bg-slate-100 text-slate-800 dark:bg-slate-950 dark:text-slate-100 antialiased">
+<body class="text-slate-800 dark:text-slate-100 antialiased">
 
 <div class="min-h-screen flex flex-col">
 
@@ -32,7 +32,7 @@
             <!-- Title row -->
             <div class="h-14 flex items-center justify-between gap-4">
                 <div class="flex items-center gap-2.5">
-                    <span class="grid place-items-center h-8 w-8 rounded-lg bg-indigo-600 text-white shadow-sm">
+                    <span class="grid place-items-center h-8 w-8 rounded-lg bg-accent-600 text-white shadow-sm">
                         <svg class="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/>
                         </svg>
@@ -41,7 +41,7 @@
                     <span class="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-0.5 shrink-0"></span>
                     <nav class="flex items-center gap-0.5 text-sm" id="school_term_nav">
                         <div class="relative">
-                            <button class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors whitespace-nowrap" id="school_btn" type="button">
+                            <button class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200 hover:text-accent-600 dark:hover:text-accent-400 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors whitespace-nowrap" id="school_btn" type="button">
                                 <span id="school_label"></span>
                                 <svg class="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
                             </button>
@@ -49,7 +49,7 @@
                         </div>
                         <svg class="h-3.5 w-3.5 text-slate-300 dark:text-slate-600 shrink-0 mx-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6"/></svg>
                         <div class="relative">
-                            <button class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors whitespace-nowrap" id="term_btn" type="button">
+                            <button class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200 hover:text-accent-600 dark:hover:text-accent-400 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors whitespace-nowrap" id="term_btn" type="button">
                                 <span id="term_label"></span>
                                 <svg class="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
                             </button>
@@ -69,17 +69,21 @@
                     </button>
                 </div>
             </div>
-            <!-- Schedule presets row -->
+            <!-- Schedules row -->
             <div class="pb-2.5 flex items-center gap-2 flex-wrap">
-                <button class="btn-press inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-md border border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-500/40 dark:text-indigo-300 dark:hover:bg-indigo-500/10 transition-colors shrink-0" id="schedule_save" type="button" title="Save current schedule as a preset">
+                <button class="btn-press inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-md border border-accent-200 text-accent-600 hover:bg-accent-50 dark:border-accent-500/40 dark:text-accent-300 dark:hover:bg-accent-500/10 transition-colors shrink-0" id="schedule_new" type="button" title="Create a new, empty schedule">
                     <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-7-7v14"/></svg>
-                    Save schedule
+                    New
                 </button>
-                <button class="btn-press text-xs font-medium px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors shrink-0" id="schedule_clear_btn" type="button" title="Remove all courses from schedule">
+                <button class="btn-press inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors shrink-0" id="schedule_duplicate" type="button" title="Duplicate the current schedule">
+                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z"/></svg>
+                    Duplicate
+                </button>
+                <button class="btn-press text-xs font-medium px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors shrink-0" id="schedule_clear_btn" type="button" title="Remove all courses from the current schedule">
                     Clear
                 </button>
                 <span class="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0"></span>
-                <div class="flex flex-wrap gap-1.5" id="schedule_presets"></div>
+                <div class="flex flex-wrap gap-1.5 items-center" id="schedule_presets"></div>
             </div>
         </div>
     </header>
@@ -90,20 +94,20 @@
         <div class="flex flex-col lg:flex-row gap-5 items-start">
 
             <!-- Results -->
-            <section class="w-full lg:flex-1 min-w-0 flex flex-col gap-4">
+            <section class="w-full lg:flex-1 lg:min-w-[22rem] min-w-0 flex flex-col gap-4">
                 <div class="flex items-center gap-2">
-                    <div class="relative flex-1">
+                    <div class="relative flex-1 min-w-0">
                         <svg class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/>
                         </svg>
-                        <input autocomplete="off" class="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/60 focus:border-indigo-500 transition" id="search_bar" placeholder="Search by course code, title, or instructor…" type="text">
+                        <input autocomplete="off" class="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-accent-500/60 focus:border-accent-500 transition" id="search_bar" placeholder="Search by course code, title, or instructor…" type="text">
                     </div>
 
                     <!-- Hidden-classes (exclusions) menu -->
                     <div class="relative shrink-0">
                         <button class="btn-press relative grid place-items-center h-[42px] w-[42px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm transition-colors" id="exclusions_btn" type="button" title="Hidden classes" aria-haspopup="true" aria-expanded="false">
                             <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.22A10.5 10.5 0 0 0 1.93 12S5.18 18.5 12 18.5c1.4 0 2.66-.27 3.77-.71M6.6 6.6A10.4 10.4 0 0 1 12 5.5c6.82 0 10.07 6.5 10.07 6.5a17 17 0 0 1-2.8 3.85M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>
-                            <span class="hidden absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 grid place-items-center rounded-full bg-indigo-600 text-white text-[10px] font-semibold tnum" id="exclusions_count">0</span>
+                            <span class="hidden absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 grid place-items-center rounded-full bg-accent-600 text-white text-[10px] font-semibold tnum" id="exclusions_count">0</span>
                         </button>
                         <div class="hidden absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 overflow-hidden" id="exclusions_menu">
                             <div class="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-slate-100 dark:border-slate-800">
@@ -111,7 +115,7 @@
                                 <button class="btn-press text-xs font-medium px-2 py-1 rounded-md text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10 transition-colors" id="exclusions_clear" type="button">Restore all</button>
                             </div>
                             <div class="p-2 border-b border-slate-100 dark:border-slate-800">
-                                <input autocomplete="off" class="w-full px-2.5 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="exclusions_search" placeholder="Search hidden classes…" type="text">
+                                <input autocomplete="off" class="w-full px-2.5 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="exclusions_search" placeholder="Search hidden classes…" type="text">
                             </div>
                             <ul class="max-h-72 overflow-auto p-1.5 flex flex-col gap-1" id="exclusions_list"></ul>
                             <p class="px-3 py-6 text-center text-sm text-slate-400 dark:text-slate-500" id="exclusions_empty">You haven't hidden any classes.</p>
@@ -155,6 +159,10 @@
 
                     <!-- Saved panel -->
                     <div class="p-4" data-panel="saved">
+                        <div class="hidden items-center justify-between gap-2 mb-3 pb-3 border-b border-slate-100 dark:border-slate-800" id="conflicts_master_row">
+                            <span class="text-xs font-medium text-slate-500 dark:text-slate-400">Show conflicting classes for all</span>
+                            <button class="switch switch-sm" id="conflicts_master_toggle" role="switch" aria-checked="false" type="button" title="Keep classes that clash only with your saved courses visible — applies to every saved course"><span class="switch-thumb"></span></button>
+                        </div>
                         <ul class="flex flex-col gap-2" id="courses_list"></ul>
                         <p class="text-sm text-slate-400 dark:text-slate-500" id="courses_empty">No courses added yet. Use the <span class="font-bold text-green-600 dark:text-green-400">+</span> button to add a class.</p>
                     </div>
@@ -184,7 +192,7 @@
                                 <button class="btn-press text-xs font-medium px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" id="prefixes_all" type="button">Select all</button>
                                 <button class="btn-press text-xs font-medium px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" id="prefixes_none" type="button">Clear</button>
                                 <span class="h-5 w-px bg-slate-200 dark:bg-slate-700"></span>
-                                <button class="btn-press inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-md border border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-500/40 dark:text-indigo-300 dark:hover:bg-indigo-500/10 transition-colors" id="prefixes_save" type="button" title="Save the current prefixes + level as a preset">
+                                <button class="btn-press inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-md border border-accent-200 text-accent-600 hover:bg-accent-50 dark:border-accent-500/40 dark:text-accent-300 dark:hover:bg-accent-500/10 transition-colors" id="prefixes_save" type="button" title="Save the current prefixes + level as a preset">
                                     <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-7-7v14"/></svg>
                                     Save set
                                 </button>
@@ -192,7 +200,7 @@
                             <div class="flex flex-wrap gap-1.5 mb-3 empty:mb-0" id="prefix_presets"></div>
                             <div class="relative mb-2">
                                 <svg class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
-                                <input autocomplete="off" class="w-full pl-8 pr-7 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="prefix_search" placeholder="Filter prefixes…" type="text">
+                                <input autocomplete="off" class="w-full pl-8 pr-7 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="prefix_search" placeholder="Filter prefixes…" type="text">
                                 <button class="hidden absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors" id="prefix_search_clear" type="button" aria-label="Clear prefix search">
                                     <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
                                 </button>
@@ -202,15 +210,18 @@
                         </div>
                     </div>
 
-                    <!-- Max level -->
+                    <!-- Course level range -->
                     <div class="p-4">
-                        <label class="flex items-center justify-between text-sm" for="max_level">
-                            <span class="font-medium text-slate-600 dark:text-slate-300">Maximum course level</span>
+                        <div class="flex items-center justify-between text-sm">
+                            <span class="font-medium text-slate-600 dark:text-slate-300">Course level</span>
                             <span class="inline-flex items-center gap-1">
-                                <input class="w-12 text-center rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="max_level" max="9" maxlength="1" min="1" type="number" value="4">
+                                <input class="w-11 text-center rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="min_level" max="9" maxlength="1" min="0" type="number" value="0" aria-label="Minimum course level">
+                                <span class="text-slate-400">000</span>
+                                <span class="text-slate-400 px-0.5">–</span>
+                                <input class="w-11 text-center rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="max_level" max="9" maxlength="1" min="1" type="number" value="4" aria-label="Maximum course level">
                                 <span class="text-slate-400">000</span>
                             </span>
-                        </label>
+                        </div>
                     </div>
 
                     <!-- Busy times -->
@@ -231,9 +242,9 @@
                             <div class="flex items-center justify-between gap-2 pb-2.5 mb-2.5 border-b-2 border-slate-300 dark:border-slate-600">
                                 <label class="text-xs font-semibold text-slate-600 dark:text-slate-300 w-10">All</label>
                                 <div class="flex items-center gap-1.5 text-sm">
-                                    <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="busy_all_pre" type="time">
+                                    <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="busy_all_pre" type="time">
                                     <span class="text-slate-400">–</span>
-                                    <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="busy_all_post" type="time">
+                                    <input class="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="busy_all_post" type="time">
                                 </div>
                             </div>
                             <div class="flex flex-col gap-2" id="schedule_excludes"></div>
@@ -245,13 +256,13 @@
                         <label class="flex items-center justify-between text-sm" for="margin_time">
                             <span class="font-medium text-slate-600 dark:text-slate-300">Margin between classes</span>
                             <span class="inline-flex items-center gap-1">
-                                <input class="w-14 text-center rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" id="margin_time" min="0" type="number" value="10">
+                                <input class="w-14 text-center rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 py-1 focus:outline-none focus:ring-2 focus:ring-accent-500/60" id="margin_time" min="0" type="number" value="10">
                                 <span class="text-slate-400">min</span>
                             </span>
                         </label>
                         <label class="flex items-center justify-between text-sm cursor-pointer" for="dynamic_times">
                             <span class="font-medium text-slate-600 dark:text-slate-300">12-hour (AM/PM) times</span>
-                            <input class="h-4 w-4 rounded accent-indigo-600" id="dynamic_times" type="checkbox" checked>
+                            <input class="h-4 w-4 rounded accent-accent-600" id="dynamic_times" type="checkbox" checked>
                         </label>
                     </div>
                 </div>
@@ -262,9 +273,10 @@
         <section class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
             <div class="flex items-center justify-between gap-3 px-4 py-3">
                 <button class="collapse_toggle group flex items-center gap-2 min-w-0 text-left" data-target="calendar" type="button">
-                    <svg class="h-5 w-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>
+                    <svg class="h-5 w-5 text-accent-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>
                     <span class="text-sm font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">Weekly Calendar</span>
                     <span class="tnum text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" id="calendar_count">0 classes</span>
+                    <span class="tnum text-xs font-semibold px-2 py-0.5 rounded-full bg-accent-100 text-accent-700 dark:bg-accent-500/15 dark:text-accent-300" id="calendar_credits">0 cr</span>
                 </button>
                 <div class="flex items-center gap-2 shrink-0">
                     <button class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors" id="compare_toggle" type="button" aria-pressed="false" title="Overlay starred classes to compare">
@@ -295,6 +307,9 @@
 <!-- JS-positioned tooltip -->
 <div id="floating-tip" class="rounded-lg bg-slate-900 dark:bg-slate-700 text-slate-50 text-xs leading-relaxed px-3 py-2 shadow-lg ring-1 ring-black/5"></div>
 
-<script src="schedule.js?v=20260630a"></script>
+<!-- JS-positioned interactive section picker popover -->
+<div id="section-popover" class="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 shadow-xl ring-1 ring-black/5 overflow-hidden"></div>
+
+<script src="schedule.js?v=20260630k"></script>
 </body>
 </html>
