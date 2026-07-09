@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta content="width=device-width, initial-scale=1.0" name="viewport">
+    <meta content="ie=edge" http-equiv="X-UA-Compatible">
+    <!-- Set theme before paint to avoid a flash of the wrong color scheme -->
+    <script>
+        (function () {
+            try {
+                var t = localStorage.getItem("theme");
+                if (t === "dark" || (t === null && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+                    document.documentElement.classList.add("dark");
+                }
+            } catch (e) {}
+        })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="./output.css?v=20260708i" rel="stylesheet">
+    <title>Prereq Explorer</title>
+</head>
+<body class="text-slate-800 dark:text-slate-100 antialiased overflow-hidden">
+
+<div class="h-screen flex flex-col">
+
+    <!-- Top bar -->
+    <header class="shrink-0 z-40 border-b border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:supports-[backdrop-filter]:bg-slate-900/60">
+        <div class="mx-auto w-full max-w-[1900px] px-2 sm:px-4">
+            <div class="h-14 flex items-center justify-between gap-4">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="grid place-items-center h-8 w-8 rounded-lg bg-accent-600 text-white shadow-sm shrink-0">
+                        <svg class="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v4m0 0-3 3m3-3 3 3M5 21h4v-4H5v4Zm10 0h4v-4h-4v4ZM7 17v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </span>
+                    <h1 class="text-lg font-semibold tracking-tight shrink-0">Prereq Explorer</h1>
+                    <span class="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-0.5 shrink-0"></span>
+                    <nav class="flex items-center gap-0.5 text-sm min-w-0" id="school_term_nav">
+                        <div class="relative">
+                            <button class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200 hover:text-accent-600 dark:hover:text-accent-400 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors whitespace-nowrap" id="school_btn" type="button">
+                                <span id="school_label">—</span>
+                                <svg class="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
+                            </button>
+                            <div class="hidden absolute top-full left-0 mt-1 min-w-[150px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 py-1 overflow-hidden" id="school_menu"></div>
+                        </div>
+                        <svg class="h-3.5 w-3.5 text-slate-300 dark:text-slate-600 shrink-0 mx-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6"/></svg>
+                        <div class="relative">
+                            <button class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200 hover:text-accent-600 dark:hover:text-accent-400 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors whitespace-nowrap" id="term_btn" type="button">
+                                <span id="term_label">—</span>
+                                <svg class="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
+                            </button>
+                            <div class="hidden absolute top-full left-0 mt-1 min-w-[150px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 py-1 overflow-hidden" id="term_menu"></div>
+                        </div>
+                    </nav>
+                </div>
+                <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+                    <span class="hidden md:inline text-sm text-slate-500 dark:text-slate-400" id="status_line"></span>
+                    <a class="inline-flex items-center gap-1.5 text-sm font-medium px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors" href="./index.html" title="Back to the schedule picker">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>
+                        <span class="hidden sm:inline">Schedule</span>
+                    </a>
+                    <button aria-label="Toggle dark mode" class="grid place-items-center h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors" id="theme_toggle" type="button" title="Toggle theme">
+                        <svg class="h-5 w-5 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1.5m0 15V21m9-9h-1.5m-15 0H3m15.36 6.36-1.06-1.06M6.7 6.7 5.64 5.64m12.72 0L17.3 6.7M6.7 17.3l-1.06 1.06M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/>
+                        </svg>
+                        <svg class="h-5 w-5 block dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Body: sidebar + graph -->
+    <div class="flex-1 min-h-0 flex">
+
+        <!-- Sidebar -->
+        <aside class="w-80 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/40 flex flex-col min-h-0">
+            <!-- Search -->
+            <div class="p-3 border-b border-slate-200 dark:border-slate-800 shrink-0">
+                <div class="relative">
+                    <svg class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z"/></svg>
+                    <input autocomplete="off" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 pl-9 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500/60 placeholder:text-slate-400" id="course_search" placeholder="Search a course, e.g. Calculus II" type="text">
+                    <button class="hidden absolute right-2 top-1/2 -translate-y-1/2 grid place-items-center h-5 w-5 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" id="search_clear" type="button" title="Clear">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 6l12 12M18 6 6 18"/></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Scrollable body: results OR focused-course detail -->
+            <div class="flex-1 min-h-0 overflow-y-auto" id="sidebar_body">
+                <!-- Search results (shown while typing) -->
+                <div class="hidden" id="search_results"></div>
+                <!-- Focused course detail (shown when a course is selected) -->
+                <div class="hidden" id="focus_detail"></div>
+                <!-- Empty / hint state -->
+                <div class="p-6 text-center text-sm text-slate-500 dark:text-slate-400 space-y-2" id="sidebar_hint">
+                    <p>Search a course to see what it <span class="font-semibold text-slate-600 dark:text-slate-300">requires</span> and what it <span class="font-semibold text-slate-600 dark:text-slate-300">unlocks</span>.</p>
+                </div>
+            </div>
+
+            <!-- Depth controls -->
+            <div class="shrink-0 border-t border-slate-200 dark:border-slate-800 p-3 space-y-2.5 hidden" id="depth_controls">
+                <div class="flex items-center justify-between gap-2">
+                    <label class="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                        <span class="inline-block h-2 w-2 rounded-full bg-sky-500"></span> Prereq depth
+                    </label>
+                    <div class="flex items-center gap-1">
+                        <button class="btn-press grid place-items-center h-6 w-6 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300" data-step="up" data-dir="-1" type="button">−</button>
+                        <span class="w-5 text-center text-sm font-semibold tnum" id="up_depth_val">2</span>
+                        <button class="btn-press grid place-items-center h-6 w-6 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300" data-step="up" data-dir="1" type="button">+</button>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between gap-2">
+                    <label class="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                        <span class="inline-block h-2 w-2 rounded-full bg-emerald-500"></span> Unlocks depth
+                    </label>
+                    <div class="flex items-center gap-1">
+                        <button class="btn-press grid place-items-center h-6 w-6 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300" data-step="down" data-dir="-1" type="button">−</button>
+                        <span class="w-5 text-center text-sm font-semibold tnum" id="down_depth_val">1</span>
+                        <button class="btn-press grid place-items-center h-6 w-6 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300" data-step="down" data-dir="1" type="button">+</button>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between gap-2 pt-0.5">
+                    <label class="text-xs font-medium text-slate-500 dark:text-slate-400 leading-tight" for="related_switch">
+                        Related courses
+                        <span class="block text-[10px] text-slate-400/80">siblings &amp; cousins — big picture</span>
+                    </label>
+                    <button aria-checked="false" class="switch switch-sm" id="related_switch" role="switch" type="button" title="Also show co-requisites and other dependents of nearby courses">
+                        <span class="switch-thumb"></span>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Graph viewport -->
+        <main class="flex-1 min-w-0 relative overflow-hidden" id="graph_viewport" style="background-color: var(--app-bg)">
+            <svg class="absolute inset-0 w-full h-full select-none touch-none" id="graph_svg" xmlns="http://www.w3.org/2000/svg"></svg>
+
+            <!-- Floating graph controls (bottom-right) -->
+            <div class="absolute bottom-4 right-4 flex flex-col gap-1.5 hidden" id="graph_controls">
+                <button class="btn-press grid place-items-center h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 shadow-sm" id="zoom_in" type="button" title="Zoom in">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14m-7-7h14"/></svg>
+                </button>
+                <button class="btn-press grid place-items-center h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 shadow-sm" id="zoom_out" type="button" title="Zoom out">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14"/></svg>
+                </button>
+                <button class="btn-press grid place-items-center h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 shadow-sm" id="zoom_fit" type="button" title="Fit to view">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4h4M20 8V4h-4M4 16v4h4m12-4v4h-4"/></svg>
+                </button>
+            </div>
+
+            <!-- Legend (bottom-left) -->
+            <div class="absolute bottom-4 left-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-800/85 backdrop-blur px-3 py-2 text-xs text-slate-500 dark:text-slate-400 shadow-sm hidden" id="graph_legend">
+                <div class="flex items-center gap-3">
+                    <span class="flex items-center gap-1.5"><span class="inline-block h-2.5 w-2.5 rounded-sm bg-sky-500"></span> Prereqs</span>
+                    <span class="flex items-center gap-1.5"><span class="inline-block h-2.5 w-2.5 rounded-sm bg-accent-500"></span> Focus</span>
+                    <span class="flex items-center gap-1.5"><span class="inline-block h-2.5 w-2.5 rounded-sm bg-emerald-500"></span> Unlocks</span>
+                    <span class="flex items-center gap-1.5" id="legend_related"><span class="inline-block h-2.5 w-2.5 rounded-sm bg-violet-500"></span> Related</span>
+                </div>
+                <div class="mt-1 flex items-center gap-3">
+                    <span class="flex items-center gap-1.5"><span class="inline-block w-4 border-t-2 border-slate-400"></span> required</span>
+                    <span class="flex items-center gap-1.5"><span class="inline-block w-4 border-t-2 border-dashed border-slate-400"></span> one&nbsp;of</span>
+                </div>
+            </div>
+
+            <!-- Big centered state (loading / unavailable / empty) -->
+            <div class="absolute inset-0 grid place-items-center pointer-events-none px-6" id="graph_state">
+                <div class="text-center max-w-md text-slate-500 dark:text-slate-400">
+                    <div class="mx-auto mb-4 grid place-items-center h-14 w-14 rounded-2xl bg-slate-100 dark:bg-slate-800">
+                        <svg class="h-7 w-7 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v4m0 0-3 3m3-3 3 3M5 21h4v-4H5v4Zm10 0h4v-4h-4v4ZM7 17v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/></svg>
+                    </div>
+                    <p class="text-base font-medium text-slate-600 dark:text-slate-300" id="graph_state_title">Loading course data…</p>
+                    <p class="mt-1 text-sm" id="graph_state_sub"></p>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- JS-positioned tooltip (shared id/CSS with the schedule page) -->
+<div id="floating-tip" class="rounded-lg bg-slate-900 dark:bg-slate-700 text-slate-50 text-xs leading-relaxed px-3 py-2 shadow-lg ring-1 ring-black/5"></div>
+
+<script src="prereqs.js?v=20260708i"></script>
+</body>
+</html>

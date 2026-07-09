@@ -4,3 +4,6 @@ page_cache/*
 classes.json
 .idea
 scrapers/*
+classes/**/*-l2.json
+classes/**/*-l2-*.json
+classes/**/*-wid-map.json
