@@ -109,9 +109,15 @@
         for (const [school, entry] of Object.entries(cfd)) {
             // Only the WashU-format catalog carries the L2 prerequisite shape.
             if ((entry._format || "").toLowerCase() !== "washu") continue;
+            // L2 paths are declared explicitly in classfiles.json ("_l2": { term: path });
+            // no filename convention is assumed. Terms without an entry have no L2 data.
+            const l2meta = entry._l2;
+            if (!l2meta || typeof l2meta !== "object" || Array.isArray(l2meta)) continue;
             for (const [term, path] of Object.entries(entry)) {
                 if (term.startsWith("_")) continue;
-                candidates.push({ school, term, l2path: path.replace(/\.json$/, "-l2.json") });
+                const l2path = l2meta[term];
+                if (typeof l2path !== "string" || !l2path) continue;
+                candidates.push({ school, term, l2path });
             }
         }
         candidates.sort((a, b) =>

@@ -6,6 +6,8 @@ let classes = [];
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const dayShort = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const WEEKDAYS = 5; // busy-time inputs cover Mon–Fri
+const DEFAULT_RESULT_COLUMNS = ["crn", "course", "title", "days", "time", "instructor", "cap"];
+const ALL_RESULT_COLUMNS = [...DEFAULT_RESULT_COLUMNS, "location"];
 
 let config = {
     "min_level": 0,
@@ -30,6 +32,8 @@ let config = {
     "course_excludes": [],
     "favorites": [],
     "search_bar": "",
+    "l2_enabled": false,
+    "visible_result_columns": DEFAULT_RESULT_COLUMNS.slice(),
     "compare_starred": true,
     "active_tab": "saved",
     "busy_enabled": false,
@@ -83,6 +87,7 @@ fetch('./classfiles.json').then(r => r.json()).then(async cfd => {
     loadWorkspace();
     applyAccent(config.school);
     await loadSchoolData(config.school, config.term);
+    if (sanitizeCourseExcludes()) saveConfig();
     propagateWebpage();
 });
 
@@ -216,6 +221,7 @@ const blankSchedule = (name = "Schedule 1") => ({
 
 const workspaceDefaults = () => ({
     prefixes: ["*"], prefix_presets: [], course_excludes: [],
+    l2_enabled: false, visible_result_columns: DEFAULT_RESULT_COLUMNS.slice(),
     schedules: [blankSchedule()], active_schedule: 0
 });
 
@@ -227,7 +233,9 @@ function normalizeWorkspace(ws) {
     const base = {
         prefixes: Array.isArray(ws.prefixes) ? ws.prefixes.slice() : defs.prefixes,
         prefix_presets: Array.isArray(ws.prefix_presets) ? ws.prefix_presets.slice() : [],
-        course_excludes: Array.isArray(ws.course_excludes) ? ws.course_excludes.slice() : []
+        course_excludes: Array.isArray(ws.course_excludes) ? ws.course_excludes.slice() : [],
+        l2_enabled: ws.l2_enabled === true,
+        visible_result_columns: sanitizeResultColumns(ws.visible_result_columns)
     };
     const cleanSched = s => ({
         name: s && s.name || "Schedule",
@@ -293,6 +301,8 @@ function syncWorkspace() {
         prefixes: (config.prefixes || ["*"]).slice(),
         prefix_presets: (config.prefix_presets || []).slice(),
         course_excludes: (config.course_excludes || []).slice(),
+        l2_enabled: config.l2_enabled === true,
+        visible_result_columns: sanitizeResultColumns(config.visible_result_columns),
         schedules: config.schedules.map(s => ({
             name: s.name,
             courses: (s.courses || []).slice(),
@@ -310,9 +320,30 @@ function loadWorkspace() {
     config.prefixes = ws.prefixes;
     config.prefix_presets = ws.prefix_presets;
     config.course_excludes = ws.course_excludes;
+    config.l2_enabled = ws.l2_enabled;
+    config.visible_result_columns = ws.visible_result_columns;
     config.schedules = ws.schedules;
     config.active_schedule = ws.active_schedule;
     loadActiveSchedule();
+}
+
+function sanitizeCourseExcludes() {
+    if (!Array.isArray(config.course_excludes)) {
+        config.course_excludes = [];
+        return true;
+    }
+
+    const seen = new Set();
+    const scoped = [];
+    for (const id of config.course_excludes) {
+        if (!classes[id] || seen.has(id)) continue;
+        seen.add(id);
+        scoped.push(id);
+    }
+
+    if (scoped.length === config.course_excludes.length) return false;
+    config.course_excludes = scoped;
+    return true;
 }
 
 // One-time migration: configs saved before workspaces existed keep their
@@ -340,16 +371,34 @@ async function loadSchoolData(school, term) {
     if (!filePath) { classes = {}; currentSchema = { showCRN: true }; prefixMeta = {}; return; }
 
     const prefixPath = schoolEntry["_prefix_names"] || null;
-    const [rawClasses, rawNames] = await Promise.all([
+    const l2Path = l2PathForTerm(schoolEntry, term);
+    // Probe L2 with HEAD when off (show toggle without downloading); full fetch when on.
+    const l2Promise = !l2Path
+        ? Promise.resolve({ available: false, data: null })
+        : config.l2_enabled
+            ? fetchOptionalJson("./" + l2Path, "L2 data").then(data => ({ available: !!data, data }))
+            : probeOptionalResource("./" + l2Path).then(available => ({ available, data: null }));
+    const [rawClasses, rawNames, l2Result] = await Promise.all([
         fetch("./" + filePath).then(r => r.json()),
         prefixPath
             ? fetch("./" + prefixPath).then(r => r.ok ? r.json() : {}).catch(() => ({}))
-            : Promise.resolve(null)
+            : Promise.resolve(null),
+        l2Promise
     ]);
 
     const { normalizedClasses, schema } = normalizeClasses(rawClasses, format);
     classes = normalizedClasses;
-    currentSchema = schema;
+    const l2Available = !!l2Result.available;
+    if (!l2Available) config.l2_enabled = false;
+    const rawL2 = config.l2_enabled && l2Result.data ? l2Result.data : null;
+    const l2Merge = rawL2 ? mergeL2Data(classes, rawL2) : { matched: 0, hasExplicitSectionGroups: false };
+    currentSchema = {
+        ...schema,
+        l2Enabled: config.l2_enabled === true,
+        hasL2: !!rawL2,
+        l2Available,
+        supportsSectionGroups: config.l2_enabled === true && (l2Merge.hasExplicitSectionGroups || !!schema.grouped)
+    };
 
     if (rawNames !== null) {
         prefixMeta = Object.fromEntries(Object.entries(rawNames || {}).filter(([k]) => !k.startsWith("_")));
@@ -362,6 +411,43 @@ async function loadSchoolData(school, term) {
                 prefixMeta[prefix] = { name: c["_department"] };
             }
         }
+    }
+}
+
+function l2PathForTerm(schoolEntry, term) {
+    // L2 data is entirely optional and declared explicitly in classfiles.json:
+    //   "_l2": { "fall-2026": "classes/WashU/fall-2026-l2.json" }
+    // No filename convention is assumed — a term with no entry (or a missing/
+    // unreadable file at the declared path) simply has no L2 data available.
+    const meta = schoolEntry && schoolEntry["_l2"];
+    if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+    const path = meta[term];
+    return typeof path === "string" && path ? path : null;
+}
+
+async function probeOptionalResource(path) {
+    try {
+        const head = await fetch(path, { method: "HEAD" });
+        if (head.ok) return true;
+        // Some static hosts reject HEAD; fall back to a cheap GET existence check.
+        if (head.status === 405 || head.status === 501) {
+            const get = await fetch(path, { method: "GET", headers: { Range: "bytes=0-0" } });
+            return get.ok || get.status === 206;
+        }
+        return false;
+    } catch (err) {
+        return false;
+    }
+}
+
+async function fetchOptionalJson(path, label) {
+    try {
+        const response = await fetch(path);
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (err) {
+        console.warn(`Could not load optional ${label}.`, err);
+        return null;
     }
 }
 
@@ -418,6 +504,105 @@ function normalizeWashU(raw) {
     return { normalizedClasses, schema: { showCRN: false, grouped: true } };
 }
 
+function normalizeCourseCode(code) {
+    return String(code || "").split(" - ")[0].trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+function l2CourseCode(record) {
+    return normalizeCourseCode(record.course || record.Course || record.class_num || record.classNum || record.code);
+}
+
+function l2SectionCode(record) {
+    return String(record.section || record.section_num || record.section_number || record.sectionNumber || "").trim();
+}
+
+function isGenericLocation(value) {
+    const loc = String(value || "").trim().toLowerCase();
+    return loc === "danforth" || loc === "danforth campus" || loc === "main campus";
+}
+
+function displayLocation(course) {
+    const place = String(course && course["Place"] || "").split("\n").map(v => v.trim()).filter(v => v && !isGenericLocation(v)).join(", ");
+    const campus = String(course && course["_campus"] || "").trim();
+    return {
+        place,
+        campus: campus && !isGenericLocation(campus) && campus !== place ? campus : ""
+    };
+}
+
+function l2Location(record) {
+    const loc = record.location || record.meeting_location || record.meetingLocation || record.room || record.place || "";
+    if (loc && !isGenericLocation(loc)) return loc;
+    const campus = record.campus || "";
+    return isGenericLocation(campus) ? "" : campus;
+}
+
+function l2SectionGroupId(record) {
+    return record.section_group || record.sectionGroup || record.section_type || record.sectionType || record.component || "";
+}
+
+function normalizeL2RequirementGroups(rawGroups) {
+    if (!Array.isArray(rawGroups)) return [];
+    return rawGroups.map((g, i) => {
+        if (typeof g === "string") return { id: g, label: g, sections: [] };
+        const id = String(g.id || g.key || g.name || g.type || `group-${i + 1}`).trim();
+        const label = String(g.label || g.name || g.title || id).trim();
+        const sections = Array.isArray(g.sections) ? g.sections.map(s => String(s).trim()).filter(Boolean) : [];
+        return { id, label, sections };
+    }).filter(g => g.id);
+}
+
+function l2RequirementGroups(record) {
+    return normalizeL2RequirementGroups(
+        record.section_groups || record.sectionGroups || record.required_section_groups || record.requiredSectionGroups
+    );
+}
+
+function mergeL2Data(normalizedClasses, rawL2) {
+    const byCourse = new Map();
+    const byCourseSection = new Map();
+    const requirementGroups = new Map();
+    for (const record of Object.values(rawL2 || {})) {
+        if (!record || typeof record !== "object") continue;
+        const code = l2CourseCode(record);
+        if (!code) continue;
+        if (!byCourse.has(code)) byCourse.set(code, []);
+        byCourse.get(code).push(record);
+        const section = l2SectionCode(record);
+        if (section) byCourseSection.set(`${code}|${section.toUpperCase()}`, record);
+        const groups = l2RequirementGroups(record);
+        if (groups.length) requirementGroups.set(code, groups);
+    }
+
+    let matched = 0;
+    for (const course of Object.values(normalizedClasses)) {
+        const code = normalizeCourseCode(course["Course"]);
+        const section = String(course["Section"] || "").trim().toUpperCase();
+        const record = byCourseSection.get(`${code}|${section}`) || (byCourse.get(code) || [])[0];
+        if (!record) continue;
+        matched++;
+        const loc = l2Location(record);
+        const description = record.description || record.details || "";
+        const eligibility = (record.eligibility_parsed && record.eligibility_parsed.text) || record.eligibility || "";
+        const prereqGroups = record.eligibility_parsed && Array.isArray(record.eligibility_parsed.coursePrereqs)
+            ? record.eligibility_parsed.coursePrereqs : [];
+        const sectionGroup = l2SectionGroupId(record);
+
+        if (loc && !course["Place"]) course["Place"] = String(loc);
+        if (description && String(description).length > String(course["details"] || "").length) course["details"] = String(description);
+        if (record.delivery_mode && !course["_delivery"]) course["_delivery"] = record.delivery_mode;
+        if (record.campus) course["_campus"] = record.campus;
+        if (record.status) course["_l2_status"] = record.status;
+        if (record.seats_available && !course["Cap"]) course["Cap"] = String(record.seats_available);
+        if (eligibility) course["_l2_eligibility"] = eligibility;
+        if (prereqGroups.length) course["_l2_prereq_groups"] = prereqGroups;
+        if (sectionGroup) course["_l2_section_group"] = String(sectionGroup);
+        if (requirementGroups.has(code)) course["_l2_requirement_groups"] = requirementGroups.get(code);
+    }
+
+    return { matched, hasExplicitSectionGroups: requirementGroups.size > 0 };
+}
+
 // --------------------------------------------------------------------------
 // Page setup
 // --------------------------------------------------------------------------
@@ -448,6 +633,8 @@ async function propagateWebpage() {
     document.getElementById("margin_time").value = config.margin_time;
     document.getElementById("dynamic_times").checked = config.dynamic_times;
     document.getElementById("search_bar").value = config.search_bar;
+    applyL2ToggleState();
+    renderColumnMenu();
 
     // Restore collapse state
     document.querySelectorAll(".collapse_toggle").forEach(applyCollapseState);
@@ -458,6 +645,8 @@ async function propagateWebpage() {
     document.getElementById("margin_time").addEventListener("input", handleValueChange);
     document.getElementById("dynamic_times").addEventListener("change", handleValueChange);
     document.getElementById("search_bar").addEventListener("input", handleSearchBarChange);
+    document.getElementById("l2_toggle").addEventListener("click", toggleL2Mode);
+    document.getElementById("columns_btn").addEventListener("click", toggleColumnsMenu);
     document.getElementById("prefixes_all").addEventListener("click", handlePrefixAllNone);
     document.getElementById("prefixes_none").addEventListener("click", handlePrefixAllNone);
     document.getElementById("theme_toggle").addEventListener("click", toggleTheme);
@@ -527,6 +716,15 @@ async function propagateWebpage() {
         }
     });
     document.addEventListener("click", e => {
+        const menu = document.getElementById("columns_menu");
+        const btn = document.getElementById("columns_btn");
+        if (!menu || menu.classList.contains("hidden")) return;
+        if (!menu.contains(e.target) && !btn.contains(e.target)) {
+            menu.classList.add("hidden");
+            btn.setAttribute("aria-expanded", "false");
+        }
+    });
+    document.addEventListener("click", e => {
         const menu = document.getElementById("calendar_action_menu");
         if (!menu || menu.classList.contains("hidden")) return;
         if (!menu.contains(e.target) && !closestEl(e.target, ".calendar_action_block")) {
@@ -587,6 +785,111 @@ function applyCompareToggleState() {
     btn.classList.toggle("dark:text-slate-300", !on);
     btn.classList.toggle("hover:bg-slate-50", !on);
     btn.classList.toggle("dark:hover:bg-slate-800", !on);
+}
+
+async function toggleL2Mode() {
+    config.l2_enabled = config.l2_enabled !== true;
+    saveConfig();
+    applyL2ToggleState(true);
+    await loadSchoolData(config.school, config.term);
+    sanitizeCourseExcludes();
+    buildPrefixList();
+    renderColumnMenu();
+    applyL2ToggleState();
+    document.getElementById("results-header").innerHTML = renderTableHeader();
+    calculateSchedule();
+    refreshResults();
+}
+
+function applyL2ToggleState(loading = false) {
+    const btn = document.getElementById("l2_toggle");
+    const status = document.getElementById("l2_status");
+    const available = currentSchema.l2Available === true;
+    // The prereq explorer only has data where L2 does, so gate its entry point on
+    // the same source of truth as the L2 slider.
+    const prereqLink = document.getElementById("prereq_link");
+    if (prereqLink) {
+        prereqLink.classList.toggle("hidden", !available);
+        prereqLink.classList.toggle("inline-flex", available);
+        prereqLink.setAttribute("aria-hidden", available ? "false" : "true");
+        prereqLink.tabIndex = available ? 0 : -1;
+    }
+    if (!btn) return;
+    btn.classList.toggle("hidden", !available);
+    btn.classList.toggle("inline-flex", available);
+    if (!available) {
+        btn.setAttribute("aria-hidden", "true");
+        btn.title = "L2 data unavailable";
+        if (status) status.textContent = "L2 unavailable";
+        return;
+    }
+    btn.removeAttribute("aria-hidden");
+    const on = config.l2_enabled === true;
+    const sw = btn.querySelector(".switch");
+    btn.setAttribute("aria-checked", on ? "true" : "false");
+    if (sw) sw.setAttribute("aria-checked", on ? "true" : "false");
+    btn.classList.toggle("bg-accent-600", on);
+    btn.classList.toggle("border-accent-600", on);
+    btn.classList.toggle("text-white", on);
+    btn.classList.toggle("border-slate-300", !on);
+    btn.classList.toggle("dark:border-slate-600", !on);
+    btn.classList.toggle("text-slate-600", !on);
+    btn.classList.toggle("dark:text-slate-300", !on);
+    if (!status) return;
+    if (loading) {
+        status.textContent = "Loading L2...";
+    } else if (!on) {
+        status.textContent = "L2 off";
+    } else if (currentSchema.hasL2) {
+        status.textContent = "L2 on";
+    } else {
+        status.textContent = "L2 on · no data";
+    }
+    btn.title = status.textContent;
+}
+
+function toggleColumnsMenu(e) {
+    e.stopPropagation();
+    const menu = document.getElementById("columns_menu");
+    const btn = document.getElementById("columns_btn");
+    if (!menu || !btn) return;
+    const open = menu.classList.toggle("hidden") === false;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) renderColumnMenu();
+}
+
+function renderColumnMenu() {
+    const list = document.getElementById("columns_list");
+    if (!list) return;
+    const selected = new Set(sanitizeResultColumns(config.visible_result_columns));
+    const available = availableResultColumns();
+    list.innerHTML = available.map(col => `
+        <label class="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer select-none">
+            <input type="checkbox" class="result_column_toggle h-3.5 w-3.5 rounded accent-accent-600" data-column="${escapeAttr(col.id)}" ${selected.has(col.id) ? "checked" : ""}>
+            <span class="text-sm text-slate-700 dark:text-slate-200">${escapeHtml(col.label)}</span>
+            ${col.id === "location" ? `<span class="ml-auto text-[10px] font-semibold uppercase tracking-wide text-accent-600 dark:text-accent-400">L2</span>` : ""}
+        </label>
+    `).join("");
+    const note = document.getElementById("columns_note");
+    if (note) {
+        note.textContent = currentSchema.l2Available
+            ? (config.l2_enabled ? "Location is available from L2 data." : "Turn on L2 mode to add the Location column.")
+            : "No L2 data is available for this term.";
+    }
+    list.querySelectorAll(".result_column_toggle").forEach(input =>
+        input.addEventListener("change", handleColumnToggle));
+}
+
+function handleColumnToggle(e) {
+    const id = e.currentTarget.dataset.column;
+    const selected = new Set(sanitizeResultColumns(config.visible_result_columns));
+    if (e.currentTarget.checked) selected.add(id);
+    else selected.delete(id);
+    config.visible_result_columns = sanitizeResultColumns([...selected]);
+    saveConfig();
+    renderColumnMenu();
+    document.getElementById("results-header").innerHTML = renderTableHeader();
+    refreshResults();
 }
 
 // --------------------------------------------------------------------------
@@ -778,7 +1081,6 @@ function buildSchoolTermUI() {
         const newSchool = item.dataset.school;
         schoolMenu.classList.add("hidden");
         if (newSchool === config.school) return;
-        config.school = newSchool;
         schoolLabel.textContent = newSchool;
         // Rebuild menu highlight and auto-select newest term
         schoolMenu.querySelectorAll(".school_item").forEach(b => {
@@ -793,10 +1095,10 @@ function buildSchoolTermUI() {
         });
         const entry = classfilesData[newSchool] || {};
         const terms = Object.keys(entry).filter(k => !k.startsWith("_")).sort((a, b) => termSortKey(b) - termSortKey(a));
-        config.term = terms[0] || "";
-        termLabel.textContent = termDisplayName(config.term);
+        const newTerm = terms[0] || "";
+        termLabel.textContent = termDisplayName(newTerm);
+        await switchSchoolTerm(newSchool, newTerm);
         refreshTermDropdown();
-        await switchSchoolTerm(newSchool, config.term);
     });
 
     termMenu.addEventListener("click", async e => {
@@ -840,9 +1142,12 @@ async function switchSchoolTerm(school, term) {
     loadWorkspace();                 // restore (or default) the target workspace
     applyAccent(school);             // accent can differ per school
     await loadSchoolData(school, term);
+    sanitizeCourseExcludes();        // purge hidden IDs from another school/term
     config.search_bar = "";
     document.getElementById("search_bar").value = "";
     buildPrefixList();
+    applyL2ToggleState();
+    renderColumnMenu();
     renderPrefixPresets();
     renderSchedulePresets();
     document.getElementById("results-header").innerHTML = renderTableHeader();
@@ -884,22 +1189,64 @@ function buildPrefixList() {
     document.getElementById("prefixes_noresults").classList.add("hidden");
 }
 
+function sanitizeResultColumns(cols) {
+    const picked = Array.isArray(cols) ? cols : DEFAULT_RESULT_COLUMNS;
+    const out = [];
+    for (const id of picked) {
+        if (ALL_RESULT_COLUMNS.includes(id) && !out.includes(id)) out.push(id);
+    }
+    if (!out.length) out.push("course", "title");
+    return out;
+}
+
+function resultColumnDefs() {
+    // width: preferred share for table-fixed. Title has no width so it absorbs leftover space.
+    // min: used only for the table's overall min-width (horizontal scroll when needed).
+    return [
+        { id: "crn", label: "CRN", width: "5.5rem", min: 72, available: () => !!currentSchema.showCRN },
+        { id: "course", label: "Course", width: currentSchema.showCRN ? "7rem" : "9rem", min: currentSchema.showCRN ? 96 : 120, available: () => true },
+        { id: "title", label: "Title", width: null, min: 160, available: () => true },
+        { id: "location", label: "Location", width: "8rem", min: 112, available: () => config.l2_enabled === true && currentSchema.hasL2 === true },
+        { id: "days", label: "Days", width: "3.5rem", min: 48, available: () => true },
+        { id: "time", label: "Time", width: "9rem", min: 120, available: () => true },
+        { id: "instructor", label: "Instructor", width: "8rem", min: 112, available: () => true },
+        { id: "cap", label: "Cap", width: "4.5rem", min: 64, available: () => true }
+    ];
+}
+
+function availableResultColumns() {
+    return resultColumnDefs().filter(c => c.available());
+}
+
+function visibleResultColumns() {
+    const selected = sanitizeResultColumns(config.visible_result_columns);
+    const available = availableResultColumns();
+    const visible = available.filter(c => selected.includes(c.id));
+    if (visible.length) return visible;
+    return available.filter(c => c.id === "course" || c.id === "title").slice(0, 2);
+}
+
+function updateResultsTableLayout() {
+    const table = document.getElementById("results");
+    if (!table) return;
+    // Keep the table filling its panel; only force a floor so many columns can scroll.
+    const minWidth = visibleResultColumns().reduce((sum, c) => sum + c.min, 96); // star + add
+    table.style.width = "100%";
+    table.style.maxWidth = "";
+    table.style.minWidth = `${minWidth}px`;
+}
+
 function renderTableHeader() {
-    const crnTh = currentSchema.showCRN
-        ? `<th class="px-3 py-2.5 font-semibold text-left w-20">CRN</th>` : "";
-    const courseTh = currentSchema.showCRN
-        ? `<th class="px-3 py-2.5 font-semibold text-left w-24">Course</th>`
-        : `<th class="px-3 py-2.5 font-semibold text-left w-40">Course</th>`;
+    const cols = visibleResultColumns();
+    window.requestAnimationFrame(updateResultsTableLayout);
     return `<tr class="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide shadow-sm">
         <th class="px-2 py-2.5 font-semibold text-center w-10">★</th>
         <th class="px-2 py-2.5 font-semibold text-center w-20">Add</th>
-        ${crnTh}
-        ${courseTh}
-        <th class="px-3 py-2.5 font-semibold text-left">Title</th>
-        <th class="px-3 py-2.5 font-semibold text-left w-16">Days</th>
-        <th class="px-3 py-2.5 font-semibold text-left w-44">Time</th>
-        <th class="px-3 py-2.5 font-semibold text-left w-40">Instructor</th>
-        <th class="px-2 py-2.5 font-semibold text-center w-20">Cap</th>
+        ${cols.map(c => {
+            const align = c.id === "cap" ? "text-center" : "text-left";
+            const style = c.width ? ` style="width:${c.width}"` : "";
+            return `<th class="px-3 py-2.5 font-semibold ${align}"${style}>${escapeHtml(c.label)}</th>`;
+        }).join("")}
     </tr>`;
 }
 
@@ -1287,7 +1634,10 @@ function refreshResults() {
     // Search
     if (config.search_bar.length > 0) {
         const fuse = new Fuse(result_classes, {
-            keys: ["Course", "Title", "Instructor"], minMatchCharLength: 2, threshold: 0.3
+            keys: config.l2_enabled
+                ? ["Course", "Title", "Instructor", "Place", "_campus", "_l2_eligibility"]
+                : ["Course", "Title", "Instructor"],
+            minMatchCharLength: 2, threshold: 0.3
         });
         result_classes = fuse.search(config.search_bar).map(r => r.item);
     } else if (currentSchema.grouped) {
@@ -1363,6 +1713,7 @@ function refreshResults() {
     });
 
     initTooltips();
+    updateResultsTableLayout();
     syncResultsHeight();
 
     justAddedCrn = null;
@@ -1397,7 +1748,7 @@ function deliveryIcon(delivery) {
 // Physical location pin + room name — only when the class has a named place
 // (e.g. FIT). Lives next to the title.
 function placePinHtml(course) {
-    const placeText = (course["Place"] || "").split("\n")[0];
+    const placeText = displayLocation(course).place;
     if (!placeText) return "";
     return `<span class="tip-trigger cursor-help inline-flex items-center text-slate-400 dark:text-slate-500 shrink-0" data-tip="${escapeAttr(placeText)}"><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/></svg></span>`;
 }
@@ -1458,20 +1809,13 @@ function daysTimeHtml(course) {
 }
 
 // A plain (non-grouped) row: FIT classes and single-section WashU courses.
-function renderRow(course) {
+function resultActionCells(course, pad = "py-1.5") {
     const id = course["_key"] || course["CRN"];
-    const displayCrn = course["CRN"];
     const starred = config.favorites.includes(id);
-    const { timeHtml, daysHtml } = daysTimeHtml(course);
-    const pinHtml = placePinHtml(course);
-    const deliveryHtml = deliveryBadgeHtml(course);
-    const capVal = course["Cap"] || "";
-
-    return `<tr>
-        <td class="px-2 py-1.5 text-center align-middle">
+    return `<td class="px-2 ${pad} text-center align-middle">
             <button class="star_course_btn btn-press text-lg leading-none ${id === justStarredCrn ? "animate-pop" : ""} ${starred ? "text-amber-400" : "text-slate-300 dark:text-slate-600 hover:text-amber-400"}" id="star_course_${id}" title="Star to compare">${starred ? "★" : "☆"}</button>
         </td>
-        <td class="px-2 py-1.5 text-center align-middle whitespace-nowrap">
+        <td class="px-2 ${pad} text-center align-middle whitespace-nowrap">
             <span class="inline-flex gap-2">
                 <button class="add_course_btn btn-press inline-grid place-items-center h-7 w-7 rounded-lg border border-green-500/50 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-600 hover:text-white hover:border-green-600" id="add_course_${id}" title="Add to schedule">
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></svg>
@@ -1480,28 +1824,74 @@ function renderRow(course) {
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14"/></svg>
                 </button>
             </span>
-        </td>
-        ${currentSchema.showCRN
-        ? `<td class="px-3 py-1.5 align-top whitespace-nowrap">
-            <div class="font-mono tnum text-xs text-slate-500 dark:text-slate-400 leading-tight">${escapeHtml(displayCrn)}</div>
-            <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500">${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
-        </td>
-        <td class="px-3 py-1.5 align-top font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}${deliveryHtml}</td>`
-        : `<td class="px-3 py-1.5 align-top whitespace-nowrap">
-            <div class="font-semibold text-slate-800 dark:text-slate-100 leading-tight">${escapeHtml(course["Course"] || "")}${deliveryHtml}</div>
-            <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500">Sec ${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
-        </td>`}
-        <td class="px-3 py-1.5 align-top overflow-hidden">
+        </td>`;
+}
+
+function resultCellHtml(col, course, opts = {}) {
+    const displayCrn = course["CRN"];
+    const { timeHtml, daysHtml } = daysTimeHtml(course);
+    const pinHtml = placePinHtml(course);
+    const deliveryHtml = deliveryBadgeHtml(course);
+    const capVal = course["Cap"] || "";
+    const py = opts.py || "py-1.5";
+    if (col.id === "crn") {
+        return `<td class="px-3 ${py} align-top whitespace-nowrap overflow-hidden">
+            <div class="font-mono tnum text-xs text-slate-500 dark:text-slate-400 leading-tight truncate">${escapeHtml(displayCrn || "")}</div>
+            <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500 truncate">${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
+        </td>`;
+    }
+    if (col.id === "course") {
+        if (opts.sectionCellHtml) {
+            return `<td class="px-3 ${py} align-middle whitespace-nowrap overflow-hidden${opts.helpCls || ""}"${opts.popData || ""}>${opts.sectionCellHtml}</td>`;
+        }
+        if (currentSchema.showCRN) {
+            return `<td class="px-3 ${py} align-top font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden">${escapeHtml(course["Course"] || "")}${deliveryHtml}</td>`;
+        }
+        return `<td class="px-3 ${py} align-top whitespace-nowrap overflow-hidden">
+            <div class="font-semibold text-slate-800 dark:text-slate-100 leading-tight truncate">${escapeHtml(course["Course"] || "")}${deliveryHtml}</div>
+            <div class="font-mono text-[11px] leading-tight tracking-tight text-slate-400 dark:text-slate-500 truncate">Sec ${escapeHtml(course["Section"] || "—")} · ${escapeHtml(course["Cr"] || "—")}cr</div>
+        </td>`;
+    }
+    if (col.id === "title") {
+        return `<td class="px-3 ${py} align-top overflow-hidden">
             <div class="flex items-center gap-1.5 min-w-0">
                 <div class="font-medium text-slate-800 dark:text-slate-100 leading-snug truncate">${escapeHtml(course["Title"] || "")}</div>
                 ${pinHtml}
             </div>
             ${descLineHtml(course)}
-        </td>
-        <td class="px-3 py-1.5 align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap">${daysHtml}</td>
-        <td class="px-3 py-1.5 align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap">${timeHtml}</td>
-        <td class="px-3 py-1.5 align-top text-slate-600 dark:text-slate-300"><div class="max-w-[12rem] truncate">${escapeHtml(course["Instructor"] || "")}</div></td>
-        <td class="px-2 py-1.5 align-middle text-center overflow-hidden">${capCellHtml(capVal)}</td>
+        </td>`;
+    }
+    if (col.id === "location") {
+        const { place, campus } = displayLocation(course);
+        const tip = [place, campus].filter(Boolean).join(" · ");
+        return `<td class="px-3 ${py} align-top text-slate-600 dark:text-slate-300 overflow-hidden">
+            ${tip ? `<div class="tip-trigger cursor-help truncate" data-tip="${escapeAttr(tip)}">${escapeHtml(place || campus)}</div>` : `<span class="text-slate-400 dark:text-slate-500">—</span>`}
+        </td>`;
+    }
+    if (col.id === "days") {
+        return `<td class="px-3 ${py} align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap overflow-hidden">${daysHtml || "—"}</td>`;
+    }
+    if (col.id === "time") {
+        return `<td class="px-3 ${py} align-top font-mono tnum text-slate-600 dark:text-slate-300 whitespace-nowrap overflow-hidden">${timeHtml || "—"}</td>`;
+    }
+    if (col.id === "instructor") {
+        return `<td class="px-3 ${py} align-top text-slate-600 dark:text-slate-300 overflow-hidden"><div class="truncate">${escapeHtml(course["Instructor"] || "")}</div></td>`;
+    }
+    if (col.id === "cap") {
+        return `<td class="px-2 ${py} align-middle text-center overflow-hidden${opts.helpCls || ""}"${opts.popData || ""}>${opts.capCellHtml || capCellHtml(capVal)}</td>`;
+    }
+    return "";
+}
+
+function renderResultCells(course, opts = {}) {
+    return visibleResultColumns().map(col => resultCellHtml(col, course, opts)).join("");
+}
+
+function renderRow(course) {
+    const id = course["_key"] || course["CRN"];
+    return `<tr data-course-code="${escapeAttr(course["Course"] || "")}" data-section-key="${escapeAttr(id)}">
+        ${resultActionCells(course)}
+        ${renderResultCells(course)}
     </tr>`;
 }
 
@@ -1566,6 +1956,7 @@ function addMinusHtml(defKey, allKeys, popId, removeTip) {
 // Header bar above a course's grouped sections, with its own add/star/minus.
 function renderGroupHeader(course, allSections, gid) {
     const collapsed = collapsedCourses.has(course["Course"]);
+    const dataColCount = Math.max(1, visibleResultColumns().length);
     const popId = registerSectionPop(course["Course"], allSections);
     const defKey = pickDefaultKey(allSections);
     const allKeys = allSections.map(s => s["_key"]).join(",");
@@ -1576,10 +1967,10 @@ function renderGroupHeader(course, allSections, gid) {
         : `<div class="text-xs text-slate-400 dark:text-slate-500 mt-0.5">${escapeHtml(course["Cr"] || "—")} credits · ${allSections.length} sections offered</div>`;
     const chevron = `<svg class="h-4 w-4 text-slate-400 transition-transform ${collapsed ? "-rotate-90" : ""}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>`;
     const tabBorder = collapsed ? "border-accent-500/40" : "border-accent-500";
-    return `<tr class="wgroup-header" data-group-header="${gid}">
+    return `<tr class="wgroup-header" data-group-header="${gid}" data-course-code="${escapeAttr(course["Course"] || "")}">
         <td class="grp_tab border-l-2 ${tabBorder} px-2 py-1.5 text-center align-middle">${starBtnHtml(defKey, popId, starred, "of " + escapeAttr(course["Course"]) + " ")}</td>
         <td class="px-2 py-1.5 text-center align-middle whitespace-nowrap">${addMinusHtml(defKey, allKeys, popId, `Hide all ${course["Course"]} sections`)}</td>
-        <td colspan="6" class="px-2 py-1.5 align-middle">
+        <td colspan="${dataColCount}" class="px-2 py-1.5 align-middle">
             <div class="flex items-center gap-2.5 min-w-0">
                 <button class="grp_collapse btn-press grid place-items-center h-6 w-6 rounded-md hover:bg-accent-100/60 dark:hover:bg-accent-500/15 shrink-0" data-course="${escapeAttr(course["Course"])}" data-gid="${gid}" title="Collapse / expand">${chevron}</button>
                 <div class="flex-1 min-w-0">
@@ -1603,8 +1994,6 @@ function renderMergedSectionRow(members, gid, course, collapsed) {
     const defKey = pickDefaultKey(members);
     const allKeys = members.map(m => m["_key"]).join(",");
     const starred = members.some(m => config.favorites.includes(m["_key"]));
-    const { timeHtml, daysHtml } = daysTimeHtml(rep);
-    const pinHtml = placePinHtml(rep);
     const deliveryHtml = deliveryBadgeHtml(rep);
 
     const moreBadge = count > 1
@@ -1625,25 +2014,17 @@ function renderMergedSectionRow(members, gid, course, collapsed) {
     const popData = multi ? ` data-secpop="${popId}"` : "";
     const helpCls = multi ? " cursor-help" : "";
 
-    return `<tr class="wsection${collapsed ? " hidden" : ""}" data-group="${gid}">
+    return `<tr class="wsection${collapsed ? " hidden" : ""}" data-group="${gid}" data-course-code="${escapeAttr(rep["Course"] || "")}">
         <td class="px-2 py-2 text-center align-middle">${starBtnHtml(defKey, popId, starred)}</td>
         <td class="px-2 py-2 text-center align-middle whitespace-nowrap">${addMinusHtml(defKey, allKeys, popId, multi ? `Hide all ${count} sections` : "Hide this section")}</td>
-        <td class="px-3 py-2 align-middle whitespace-nowrap${helpCls}"${popData}>${secCell}</td>
-        <td colspan="2" class="px-3 py-2 align-middle">
-            <div class="flex items-center gap-2 min-w-0">
-                <span class="font-mono tnum text-slate-600 dark:text-slate-300 font-semibold shrink-0">${daysHtml || "—"}</span>
-                <span class="font-mono tnum text-slate-500 dark:text-slate-400 truncate">${timeHtml || "—"}</span>
-                ${pinHtml}
-            </div>
-        </td>
-        <td colspan="2" class="px-3 py-2 align-middle text-slate-600 dark:text-slate-300"><div class="truncate">${escapeHtml(rep["Instructor"] || "")}</div></td>
-        <td class="px-2 py-2 align-middle text-center overflow-hidden${helpCls}"${popData}>${capCell}</td>
+        ${renderResultCells(rep, { py: "py-2", sectionCellHtml: secCell, helpCls, popData, capCellHtml: capCell })}
     </tr>`;
 }
 
 function renderSectionDivider(gid, collapsed) {
+    const totalColCount = visibleResultColumns().length + 2;
     return `<tr class="wdivider${collapsed ? " hidden" : ""}" data-group="${gid}">
-        <td colspan="8" class="px-3 py-1">
+        <td colspan="${totalColCount}" class="px-3 py-1">
             <div class="h-px w-full bg-accent-300/60 dark:bg-accent-500/30"></div>
         </td>
     </tr>`;
@@ -1805,6 +2186,95 @@ function courseCountKey(course, fallback) {
     return (course && course["Course"] ? course["Course"] : fallback || "").trim().toLowerCase();
 }
 
+function sectionsForCourse(courseCode) {
+    return Object.values(classes).filter(c => c && c["Course"] === courseCode);
+}
+
+// Compact label for a set of section codes: "01", "01–03", "A–C".
+function sectionRangeLabel(sectionCodes) {
+    const codes = [...new Set((sectionCodes || []).map(s => String(s || "").trim()).filter(Boolean))];
+    if (!codes.length) return "";
+    codes.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    if (codes.length === 1) return codes[0];
+    return `${codes[0]}–${codes[codes.length - 1]}`;
+}
+
+function sectionRequirementForCourse(courseCode) {
+    if (config.l2_enabled !== true || !courseCode) return null;
+    const sections = sectionsForCourse(courseCode);
+    if (!sections.length) return null;
+
+    const explicit = sections.find(s => Array.isArray(s["_l2_requirement_groups"]) && s["_l2_requirement_groups"].length);
+    if (explicit) {
+        const groups = explicit["_l2_requirement_groups"].map((g, i) => {
+            const listed = Array.isArray(g.sections) ? g.sections : [];
+            const label = g.label || sectionRangeLabel(listed) || g.id || `Part ${i + 1}`;
+            return { id: String(g.id || `group-${i + 1}`), label, sections: listed };
+        });
+        if (groups.length) return { source: "l2", groups };
+    }
+
+    const perSection = new Map();
+    for (const s of sections) {
+        const id = s["_l2_section_group"];
+        if (!id) continue;
+        if (!perSection.has(id)) perSection.set(id, { id: String(id), label: String(id), sections: [] });
+        perSection.get(id).sections.push(s["Section"]);
+    }
+    if (perSection.size > 1) {
+        const groups = [...perSection.values()].map(g => ({
+            ...g,
+            label: sectionRangeLabel(g.sections) || g.label
+        }));
+        return { source: "l2", groups };
+    }
+
+    if (!currentSchema.grouped) return null;
+    const nums = sections.filter(s => sectionKindOf(s["Section"]) === "num");
+    const alphas = sections.filter(s => sectionKindOf(s["Section"]) === "alpha");
+    if (!nums.length || !alphas.length) return null;
+    return {
+        source: "fallback",
+        groups: [
+            { id: "num", label: sectionRangeLabel(nums.map(s => s["Section"])), kind: "num", sections: [] },
+            { id: "alpha", label: sectionRangeLabel(alphas.map(s => s["Section"])), kind: "alpha", sections: [] }
+        ]
+    };
+}
+
+function sectionMatchesRequirement(section, group) {
+    if (!section || !group) return false;
+    const sec = String(section["Section"] || "").trim();
+    if (Array.isArray(group.sections) && group.sections.length) {
+        return group.sections.map(s => String(s).trim().toUpperCase()).includes(sec.toUpperCase());
+    }
+    if (section["_l2_section_group"] && String(section["_l2_section_group"]) === String(group.id)) return true;
+    if (group.kind) return sectionKindOf(sec) === group.kind;
+    return false;
+}
+
+function savedRequirementStatus(courseCode, savedIds) {
+    const requirement = sectionRequirementForCourse(courseCode);
+    if (!requirement) return null;
+    const savedSections = (savedIds || []).map(id => classes[id]).filter(Boolean);
+    const missing = requirement.groups.filter(g => !savedSections.some(s => sectionMatchesRequirement(s, g)));
+    return { requirement, missing, complete: missing.length === 0 };
+}
+
+function focusRequirementGroup(courseCode) {
+    config.search_bar = courseCode;
+    const input = document.getElementById("search_bar");
+    if (input) input.value = courseCode;
+    collapsedCourses.delete(courseCode);
+    saveConfig();
+    refreshResults();
+    window.requestAnimationFrame(() => {
+        const row = [...document.querySelectorAll("#results-body [data-course-code]")]
+            .find(el => el.dataset.courseCode === courseCode);
+        if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+}
+
 function savedCourseSummary(ids) {
     const unique = new Map();
     for (const id of ids || []) {
@@ -1867,8 +2337,64 @@ function renderCoursesList() {
         masterToggle.setAttribute("aria-checked", allOn ? "true" : "false");
     }
 
+    const byCourse = new Map();
+    for (const crn of valid) {
+        const code = classes[crn]["Course"] || crn;
+        if (!byCourse.has(code)) byCourse.set(code, []);
+        byCourse.get(code).push(crn);
+    }
+    const renderedRequired = new Set();
+
     for (const crn of valid) {
         const c = classes[crn];
+        const courseCode = c["Course"] || crn;
+        const courseIds = byCourse.get(courseCode) || [crn];
+        const reqStatus = savedRequirementStatus(courseCode, courseIds);
+        if (reqStatus) {
+            if (renderedRequired.has(courseCode)) continue;
+            renderedRequired.add(courseCode);
+            const color = courseColor(courseCode);
+            const savedSecs = courseIds.map(id => classes[id]).filter(Boolean);
+            // One chip per required part: filled when a matching section is saved.
+            const partChips = reqStatus.requirement.groups.map(g => {
+                const filled = savedSecs.some(s => sectionMatchesRequirement(s, g));
+                const tip = filled
+                    ? `Have a section from ${g.label}`
+                    : `Also need one section from ${g.label}`;
+                const cls = filled
+                    ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+                    : "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300";
+                return `<span class="tip-trigger cursor-help inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold font-mono ${cls}" data-tip="${escapeAttr(tip)}">${filled ? "✓" : "○"} ${escapeHtml(g.label)}</span>`;
+            }).join("");
+            const sectionRows = courseIds.map(id => {
+                const sec = classes[id];
+                const showConflicts = (config.show_conflict_crns || []).includes(id);
+                return `<div class="flex items-center gap-2 rounded-md bg-slate-50 dark:bg-slate-800/60 px-2 py-1">
+                    <span class="tip-trigger cursor-help flex-1 min-w-0" data-tip-crn="${escapeAttr(id)}">
+                        <span class="font-mono text-xs text-slate-500 dark:text-slate-400">Sec ${escapeHtml(sec["Section"] || "—")}</span>
+                    </span>
+                    <button class="show_conflict_toggle switch switch-sm" role="switch" aria-checked="${showConflicts}" data-crn="${escapeAttr(id)}" type="button" title="Show classes that clash only with this section"><span class="switch-thumb"></span></button>
+                    <button class="delete_course_btn btn-press shrink-0 grid place-items-center h-5 w-5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors" id="delete_course_${id}" title="Remove">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>`;
+            }).join("");
+            const missingLabel = reqStatus.missing.map(g => g.label).join(" / ");
+            const missingAction = reqStatus.complete ? "" : `<button class="requirement_find_btn btn-press self-start ml-[18px] text-xs font-medium px-2 py-1 rounded-md border border-amber-300/70 text-amber-700 hover:bg-amber-50 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-500/10 transition-colors" data-course="${escapeAttr(courseCode)}" type="button" title="This course needs one section from each group">Add Sec ${escapeHtml(missingLabel)}</button>`;
+            list.innerHTML += `<li class="flex flex-col gap-2 text-sm ${courseIds.includes(justAddedCrn) ? "animate-in" : ""}">
+                <div class="flex items-start gap-2">
+                    <span class="mt-1 h-2.5 w-2.5 rounded-full shrink-0" style="background:${color}"></span>
+                    <span class="flex-1 min-w-0">
+                        <span class="font-semibold text-slate-800 dark:text-slate-100">${escapeHtml(courseCode)}</span>
+                        <span class="text-slate-500 dark:text-slate-400"> · ${escapeHtml(c["Title"])}</span>
+                    </span>
+                </div>
+                <div class="pl-[18px] flex flex-wrap gap-1">${partChips}</div>
+                <div class="pl-[18px] flex flex-col gap-1">${sectionRows}</div>
+                ${missingAction}
+            </li>`;
+            continue;
+        }
         const color = courseColor(c["Course"]);
         const showConflicts = (config.show_conflict_crns || []).includes(crn);
         list.innerHTML += `<li class="flex flex-col gap-1.5 text-sm ${crn === justAddedCrn ? "animate-in" : ""}">
@@ -1892,6 +2418,8 @@ function renderCoursesList() {
 
     list.querySelectorAll(".show_conflict_toggle").forEach(btn =>
         btn.addEventListener("click", () => toggleShowConflict(btn.dataset.crn)));
+    list.querySelectorAll(".requirement_find_btn").forEach(btn =>
+        btn.addEventListener("click", () => focusRequirementGroup(btn.dataset.course)));
 }
 
 // Master toggle: turn "show conflicts" on for every saved course, or off for all
@@ -2503,19 +3031,23 @@ function classDetailsHtml(crn) {
         if (sm === null || em === null) return day;
         return `${day} ${formatMinutes(sm)}–${formatMinutes(em)}`;
     }).filter(Boolean).join("; ");
+    const loc = displayLocation(c);
+    const where = [loc.place, loc.campus].filter(Boolean).join(", ");
 
     return `<div class="text-left space-y-1">
         <div class="font-semibold text-white">${escapeHtml(c["Course"])} · Sec ${escapeHtml(c["Section"] || "—")}</div>
         <div class="text-slate-200">${escapeHtml(c["Title"] || "")}</div>
         <div class="pt-1 space-y-0.5">
             ${row("When", times)}
-            ${row("Where", (c["Place"] || "").replaceAll("\n", ", "))}
+            ${row("Where", where)}
             ${row("Instructor", c["Instructor"])}
             ${row("Credits", c["Cr"])}
             ${row("Seats", c["Cap"])}
             ${row("CRN", c["CRN"])}
+            ${row("Status", c["_l2_status"])}
         </div>
         ${c["details"] ? `<div class="pt-1 text-slate-300 border-t border-white/10 mt-1">${escapeHtml(c["details"])}</div>` : ""}
+        ${c["_l2_eligibility"] ? `<div class="pt-1 text-slate-300 border-t border-white/10 mt-1">Eligibility: ${escapeHtml(c["_l2_eligibility"])}</div>` : ""}
         ${c["Notes"] ? `<div class="pt-1 text-amber-300">Note: ${escapeHtml(c["Notes"])}</div>` : ""}
     </div>`;
 }

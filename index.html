@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link href="./output.css?v=20260630k" rel="stylesheet">
+    <link href="./output.css?v=20260709b" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.1.0"></script>
     <title>Schedule Picker</title>
 </head>
@@ -59,7 +59,7 @@
                 </div>
                 <div class="flex items-center gap-3">
                     <span class="hidden sm:inline text-sm text-slate-500 dark:text-slate-400" id="result_count"></span>
-                    <a class="inline-flex items-center gap-1.5 text-sm font-medium px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors" href="./prereqs.html" title="Explore course prerequisite trees">
+                    <a class="hidden items-center gap-1.5 text-sm font-medium px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors" id="prereq_link" href="./prereqs.html" title="Explore course prerequisite trees">
                         <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v4m0 0-3 3m3-3 3 3M5 21h4v-4H5v4Zm10 0h4v-4h-4v4ZM7 17v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/></svg>
                         <span class="hidden sm:inline">Prereqs</span>
                     </a>
@@ -105,6 +105,27 @@
                             <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/>
                         </svg>
                         <input autocomplete="off" class="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-accent-500/60 focus:border-accent-500 transition" id="search_bar" placeholder="Search by course code, title, or instructor…" type="text">
+                    </div>
+
+                    <!-- Optional L2 data + result columns -->
+                    <button class="hidden btn-press items-center gap-2 h-[42px] px-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm transition-colors shrink-0" id="l2_toggle" type="button" role="switch" aria-checked="false" title="Enable optional L2 course details">
+                        <span class="switch switch-sm pointer-events-none"><span class="switch-thumb"></span></span>
+                        <span class="hidden xl:inline text-sm font-medium">L2</span>
+                        <span class="sr-only" id="l2_status">L2 off</span>
+                    </button>
+
+                    <div class="relative shrink-0">
+                        <button class="btn-press inline-flex items-center gap-1.5 h-[42px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm transition-colors" id="columns_btn" type="button" title="Choose result columns" aria-haspopup="true" aria-expanded="false">
+                            <svg class="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16M8 6v12m8-12v12"/></svg>
+                            <span class="hidden xl:inline text-sm font-medium">Columns</span>
+                        </button>
+                        <div class="hidden absolute right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 overflow-hidden" id="columns_menu">
+                            <div class="px-3 py-2.5 border-b border-slate-100 dark:border-slate-800">
+                                <div class="text-sm font-semibold text-slate-700 dark:text-slate-200">Result columns</div>
+                                <div class="text-xs text-slate-400 dark:text-slate-500" id="columns_note"></div>
+                            </div>
+                            <div class="p-1.5" id="columns_list"></div>
+                        </div>
                     </div>
 
                     <!-- Hidden-classes (exclusions) menu -->
@@ -314,6 +335,6 @@
 <!-- JS-positioned interactive section picker popover -->
 <div id="section-popover" class="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 shadow-xl ring-1 ring-black/5 overflow-hidden"></div>
 
-<script src="schedule.js?v=20260630k"></script>
+<script src="schedule.js?v=20260709b"></script>
 </body>
 </html>
