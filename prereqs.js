@@ -103,21 +103,22 @@
     // =======================================================================
     // Bootstrap: discover which school|term have L2 data
     // =======================================================================
-    fetch("./classfiles.json").then(r => r.json()).then(cfd => {
+    fetch("./classfiles.json", { cache: "no-store" }).then(r => r.json()).then(cfd => {
         classfilesData = cfd;
         candidates = [];
         for (const [school, entry] of Object.entries(cfd)) {
-            // Only the WashU-format catalog carries the L2 prerequisite shape.
-            if ((entry._format || "").toLowerCase() !== "washu") continue;
-            // L2 paths are declared explicitly in classfiles.json ("_l2": { term: path });
-            // no filename convention is assumed. Terms without an entry have no L2 data.
-            const l2meta = entry._l2;
-            if (!l2meta || typeof l2meta !== "object" || Array.isArray(l2meta)) continue;
+            // A school participates if it has prerequisite DATA — either in a separate L2
+            // file ("_l2": { term: path }, e.g. WashU) or inline in its base catalog when it
+            // flags "_prereqs": true (e.g. CWRU's single-file guest scrape). No format-name
+            // check: any school that provides the data shows up.
+            const l2meta = (entry._l2 && typeof entry._l2 === "object" && !Array.isArray(entry._l2)) ? entry._l2 : null;
+            const inlinePrereqs = entry._prereqs === true;
+            if (!l2meta && !inlinePrereqs) continue;
             for (const [term, path] of Object.entries(entry)) {
                 if (term.startsWith("_")) continue;
-                const l2path = l2meta[term];
-                if (typeof l2path !== "string" || !l2path) continue;
-                candidates.push({ school, term, l2path });
+                const dataPath = (l2meta && l2meta[term]) || (inlinePrereqs ? path : null);
+                if (typeof dataPath !== "string" || !dataPath) continue;
+                candidates.push({ school, term, l2path: dataPath });
             }
         }
         candidates.sort((a, b) =>
@@ -308,6 +309,16 @@
             const ep = v.eligibility_parsed || {};
             harvestTitles(ep.tree);
             const elig = ep.text || v.eligibility || "";
+            // Field names differ between an L2 record (WashU) and an inline catalog record
+            // (CWRU): read either. CWRU keeps the title in its own field and the code in
+            // `course`; WashU joins them as "CODE - Title".
+            const title = v.title || titleOf(v.course);
+            const creditsRaw = v.credit_hours || v.credits || v.units || "";
+            const creditsNum = parseFloat(creditsRaw);
+            const credits = Number.isNaN(creditsNum) ? String(creditsRaw) : String(creditsNum); // "3.00" → "3"
+            const format = v.instructional_format || v.component || "";
+            const delivery = v.delivery_mode || v.delivery || "";
+            const seats = v.seats_available || (typeof v.open_seats === "number" ? `${v.open_seats} open` : "");
             // Prefer the scraper's structured prereqs; fall back to parsing the text.
             const structured = (ep.coursePrereqs || []).length > 0;
             const groups = structured
@@ -320,13 +331,13 @@
             if (!e) {
                 e = {
                     code,
-                    title: titleOf(v.course),
-                    credits: v.credit_hours || "",
-                    format: v.instructional_format || "",
-                    delivery: v.delivery_mode || "",
+                    title,
+                    credits,
+                    format,
+                    delivery,
                     campus: v.campus || "",
                     status: v.status || "",
-                    seats: v.seats_available || "",
+                    seats,
                     description: v.description || "",
                     eligibility: elig,
                     prereqGroups: groups,
@@ -338,7 +349,7 @@
                 // Merge: prefer the section that carries the richest data.
                 if (!e.description && v.description) e.description = v.description;
                 if (!e.eligibility && elig) e.eligibility = elig;
-                if (!e.credits && v.credit_hours) e.credits = v.credit_hours;
+                if (!e.credits && credits) e.credits = credits;
                 // Structured prereqs always beat text-derived ones; otherwise keep the fuller set.
                 if ((structured && !e._structured) ||
                     (structured === e._structured && groups.length > e.prereqGroups.length)) {

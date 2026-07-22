@@ -15,6 +15,8 @@ let config = {
     "prefixes_open": true,
     "schedule_exclude_open": false,
     "calendar_open": true,
+    "solver_open": false,
+    "solver_excluded": [],
     "schedule_exclude_0_pre": "07:00",
     "schedule_exclude_0_post": "09:00",
     "schedule_exclude_1_pre": "07:00",
@@ -74,8 +76,13 @@ let calendarActionCrn = null;
 let shiftHeld = false;
 let activeTipEl = null;
 
-fetch('./classfiles.json').then(r => r.json()).then(async cfd => {
+// no-store: the registry is tiny and changes on every catalog update — a stale cached copy
+// would hide a newly added school/term from returning visitors.
+fetch('./classfiles.json', { cache: 'no-store' }).then(r => r.json()).then(async cfd => {
     classfilesData = cfd;
+    // Fire-and-forget: the app must never wait on a network health check to render.
+    // Sync resolves in the background and reloads only if the cloud has newer data.
+    if (window.SyncClient) SyncClient.init();
     loadConfig();
     // Validate stored school/term against classfiles; fall back to first available.
     if (!classfilesData[config.school]) config.school = Object.keys(classfilesData)[0] || "";
@@ -144,6 +151,14 @@ function parseTime12hToHHMM(str) {
     return String(h).padStart(2, "0") + String(min).padStart(2, "0");
 }
 
+// "3.00" → "3", "1.50" → "1.5", "" → "" — trim trailing-zero credit strings.
+function creditLabel(v) {
+    const s = String(v ?? "").trim();
+    if (!s) return "";
+    const n = parseFloat(s);
+    return Number.isNaN(n) ? s : String(n);
+}
+
 // "fall-2026" → "Fall 2026"
 function termDisplayName(slug) {
     return String(slug).split("-").map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
@@ -166,6 +181,9 @@ function saveConfig() {
     sortStarredCourses();
     syncWorkspace();
     localStorage.setItem("config", btoa(unescape(encodeURIComponent(JSON.stringify(config)))));
+    // Single choke point for "local state changed" — the cloud push is debounced,
+    // since this runs on every keystroke in the search box.
+    if (window.SyncClient) SyncClient.markDirty();
 }
 
 function loadConfig() {
@@ -220,7 +238,7 @@ const blankSchedule = (name = "Schedule 1") => ({
 });
 
 const workspaceDefaults = () => ({
-    prefixes: ["*"], prefix_presets: [], course_excludes: [],
+    prefixes: ["*"], prefix_presets: [], course_excludes: [], solver_excluded: [],
     l2_enabled: false, visible_result_columns: DEFAULT_RESULT_COLUMNS.slice(),
     schedules: [blankSchedule()], active_schedule: 0
 });
@@ -234,6 +252,7 @@ function normalizeWorkspace(ws) {
         prefixes: Array.isArray(ws.prefixes) ? ws.prefixes.slice() : defs.prefixes,
         prefix_presets: Array.isArray(ws.prefix_presets) ? ws.prefix_presets.slice() : [],
         course_excludes: Array.isArray(ws.course_excludes) ? ws.course_excludes.slice() : [],
+        solver_excluded: Array.isArray(ws.solver_excluded) ? ws.solver_excluded.slice() : [],
         l2_enabled: ws.l2_enabled === true,
         visible_result_columns: sanitizeResultColumns(ws.visible_result_columns)
     };
@@ -301,6 +320,7 @@ function syncWorkspace() {
         prefixes: (config.prefixes || ["*"]).slice(),
         prefix_presets: (config.prefix_presets || []).slice(),
         course_excludes: (config.course_excludes || []).slice(),
+        solver_excluded: (config.solver_excluded || []).slice(),
         l2_enabled: config.l2_enabled === true,
         visible_result_columns: sanitizeResultColumns(config.visible_result_columns),
         schedules: config.schedules.map(s => ({
@@ -320,6 +340,7 @@ function loadWorkspace() {
     config.prefixes = ws.prefixes;
     config.prefix_presets = ws.prefix_presets;
     config.course_excludes = ws.course_excludes;
+    config.solver_excluded = ws.solver_excluded;
     config.l2_enabled = ws.l2_enabled;
     config.visible_result_columns = ws.visible_result_columns;
     config.schedules = ws.schedules;
@@ -392,12 +413,18 @@ async function loadSchoolData(school, term) {
     if (!l2Available) config.l2_enabled = false;
     const rawL2 = config.l2_enabled && l2Result.data ? l2Result.data : null;
     const l2Merge = rawL2 ? mergeL2Data(classes, rawL2) : { matched: 0, hasExplicitSectionGroups: false };
+    // Features are gated on what DATA is actually present (after any L2 merge), not on a
+    // per-school "L2 mode" flag. A school that ships rich data in its base catalog (CWRU)
+    // gets the same features as one whose data arrives via an optional L2 file (WashU); a
+    // school with only bare listings (FIT) simply lights up fewer features.
+    const caps = computeCapabilities(classes, schema, l2Merge);
     currentSchema = {
         ...schema,
         l2Enabled: config.l2_enabled === true,
         hasL2: !!rawL2,
-        l2Available,
-        supportsSectionGroups: config.l2_enabled === true && (l2Merge.hasExplicitSectionGroups || !!schema.grouped)
+        l2Available,              // a separate L2 file exists to optionally download (WashU)
+        caps,
+        supportsSectionGroups: caps.sectionGroups
     };
 
     if (rawNames !== null) {
@@ -453,7 +480,24 @@ async function fetchOptionalJson(path, label) {
 
 function normalizeClasses(raw, format) {
     if (format === "washu") return normalizeWashU(raw);
+    if (format === "cwru") return normalizeCWRU(raw);
     return normalizeFIT(raw);
+}
+
+// Scan the normalized catalog for which enrichment fields are actually present, so
+// display features can be gated on data availability rather than a school/L2 toggle.
+function computeCapabilities(classes, schema, l2Merge) {
+    const caps = { descriptions: false, locations: false, eligibility: false, prereqs: false, sectionGroups: false };
+    for (const c of Object.values(classes)) {
+        if (!caps.descriptions && c["details"]) caps.descriptions = true;
+        if (!caps.locations && c["Place"] && !isGenericLocation(c["Place"])) caps.locations = true;
+        if (!caps.eligibility && c["_l2_eligibility"]) caps.eligibility = true;
+        if (!caps.prereqs && Array.isArray(c["_l2_prereq_groups"]) && c["_l2_prereq_groups"].length) caps.prereqs = true;
+        if (!caps.sectionGroups && c["_l2_format"]) caps.sectionGroups = true;
+        if (caps.descriptions && caps.locations && caps.eligibility && caps.prereqs && caps.sectionGroups) break;
+    }
+    if (l2Merge && l2Merge.hasExplicitSectionGroups) caps.sectionGroups = true;
+    return caps;
 }
 
 function normalizeFIT(raw) {
@@ -482,6 +526,9 @@ function normalizeWashU(raw) {
         }
         normalizedClasses[synKey] = {
             "_key": synKey,
+            // The registrar's own section id. L2 records are keyed identically, so
+            // this is what lets L2 attach per-section rather than per-course.
+            "_src_key": id,
             "CRN": "",
             "Course": classNum,
             "Title": c["class_name"] || "",
@@ -504,6 +551,71 @@ function normalizeWashU(raw) {
     return { normalizedClasses, schema: { showCRN: false, grouped: true } };
 }
 
+function normalizeCWRU(raw) {
+    // CWRU (PeopleSoft, guest system) records are keyed by Class Nbr and carry EVERYTHING
+    // in one file — grid fields plus the drill-in detail (description, prerequisites, full
+    // instructor, room, final exam). There is no separate L2 source, so the fields other
+    // schools populate via an L2 merge (`details`, `_l2_eligibility`, `_l2_prereq_groups`,
+    // `_l2_format`) are set here directly, and the app's data-capability flags light up the
+    // same features. Day words + 12h times + split seats mirror WashU, so it renders grouped.
+    const dayWordMap = { Mon: "M", Tue: "T", Wed: "W", Thu: "R", Fri: "F", Sat: "S", Sun: "U" };
+    const normalizedClasses = {};
+    for (const [id, c] of Object.entries(raw)) {
+        if (id.startsWith("_")) continue;
+        const classNbr = c["class_nbr"] || id;
+        const days = (c["days"] || "").split(/\s+/).map(d => dayWordMap[d] || "").join("");
+        let times = "";
+        const tm = (c["time"] || "").match(/([\d:]+\s*[AP]M)\s*-\s*([\d:]+\s*[AP]M)/i);
+        if (tm) {
+            const s = parseTime12hToHHMM(tm[1].trim()), e = parseTime12hToHHMM(tm[2].trim());
+            if (s && e) times = `${s}-${e}`;
+        }
+        // Seats: the card shows Open + Taken; capacity is their sum (enrolled/cap like FIT/WashU).
+        const taken = c["seats_taken"], open = c["open_seats"];
+        const cap = (typeof taken === "number" && typeof open === "number")
+            ? `${taken}/${taken + open}`
+            : (c["status"] || "");
+        // Location is already clean from the scraper; strip any trailing "(In-Person)".
+        const rawPlace = c["location"] || "";
+        const place = rawPlace.replace(/\s*\((?:In-Person|Online|Hybrid|Remote)\)\s*$/i, "").trim();
+        const prereqGroups = (c["eligibility_parsed"] && Array.isArray(c["eligibility_parsed"].coursePrereqs))
+            ? c["eligibility_parsed"].coursePrereqs : [];
+        normalizedClasses[classNbr] = {
+            "_key": classNbr,
+            "_src_key": classNbr,       // Class Nbr is the registrar's per-section id
+            "CRN": classNbr,
+            "Course": c["course"] || "",
+            "Title": c["title"] || "",
+            "Section": c["section"] || "",
+            "Cr": creditLabel(c["units"]),
+            "details": c["description"] || "",
+            "Notes": c["coreq_note"] || "",
+            "Days": days,
+            "Times": times,
+            "Place": place,
+            "Instructor": c["instructor"] || "",
+            "Cap": cap,
+            "_department": c["subject_name"] || "",
+            "_delivery": c["delivery"] || "",
+            "_class": c["course"] || "",
+            "_component": c["component"] || "",
+            "_session": c["session"] || "",
+            "_dates": c["dates"] || "",
+            "_school": "CWRU",
+            // Course attribute badges (Cross-Listed, Consent Required, Honors, …).
+            "_tags": Array.isArray(c["tags"]) ? c["tags"] : [],
+            "_l2_status": c["status"] || "",   // "Open"/"Closed" — surfaced in the hover card
+            // Detail fields other schools get from L2 — set directly so the same features work.
+            "_l2_eligibility": c["eligibility"] || "",
+            "_l2_prereq_groups": prereqGroups,
+            "_l2_format": c["component"] || "",
+            "_final_exam": c["final_exam"] || null
+        };
+    }
+    // grouped: sections render under a per-course header (many sections per course).
+    return { normalizedClasses, schema: { showCRN: false, grouped: true } };
+}
+
 function normalizeCourseCode(code) {
     return String(code || "").split(" - ")[0].trim().replace(/\s+/g, " ").toUpperCase();
 }
@@ -518,7 +630,9 @@ function l2SectionCode(record) {
 
 function isGenericLocation(value) {
     const loc = String(value || "").trim().toLowerCase();
-    return loc === "danforth" || loc === "danforth campus" || loc === "main campus";
+    return loc === "danforth" || loc === "danforth campus" || loc === "main campus"
+        // CWRU placeholders for a not-yet-assigned room (future term) — not real locations.
+        || loc === "to be scheduled" || loc === "to be announced" || loc === "tba" || loc === "tbd";
 }
 
 function displayLocation(course) {
@@ -561,9 +675,11 @@ function l2RequirementGroups(record) {
 function mergeL2Data(normalizedClasses, rawL2) {
     const byCourse = new Map();
     const byCourseSection = new Map();
+    const bySourceKey = new Map();
     const requirementGroups = new Map();
-    for (const record of Object.values(rawL2 || {})) {
+    for (const [rawKey, record] of Object.entries(rawL2 || {})) {
         if (!record || typeof record !== "object") continue;
+        bySourceKey.set(rawKey, record);
         const code = l2CourseCode(record);
         if (!code) continue;
         if (!byCourse.has(code)) byCourse.set(code, []);
@@ -578,7 +694,13 @@ function mergeL2Data(normalizedClasses, rawL2) {
     for (const course of Object.values(normalizedClasses)) {
         const code = normalizeCourseCode(course["Course"]);
         const section = String(course["Section"] || "").trim().toUpperCase();
-        const record = byCourseSection.get(`${code}|${section}`) || (byCourse.get(code) || [])[0];
+        // Exact section match first. WashU's L2 leaves `section` null on every
+        // record, so without the source-key join every section of a course would
+        // inherit one arbitrary section's details (and its component type).
+        const record = bySourceKey.get(course["_src_key"])
+            || byCourseSection.get(`${code}|${section}`)
+            || (byCourse.get(code) || [])[0];
+        const exact = bySourceKey.has(course["_src_key"]);
         if (!record) continue;
         matched++;
         const loc = l2Location(record);
@@ -596,7 +718,11 @@ function mergeL2Data(normalizedClasses, rawL2) {
         if (record.seats_available && !course["Cap"]) course["Cap"] = String(record.seats_available);
         if (eligibility) course["_l2_eligibility"] = eligibility;
         if (prereqGroups.length) course["_l2_prereq_groups"] = prereqGroups;
-        if (sectionGroup) course["_l2_section_group"] = String(sectionGroup);
+        // Only trust the component type when the record is truly this section's.
+        const format = exact ? String(record.instructional_format || "").trim() : "";
+        if (format) course["_l2_format"] = format;
+        const groupId = sectionGroup || format;
+        if (groupId) course["_l2_section_group"] = String(groupId);
         if (requirementGroups.has(code)) course["_l2_requirement_groups"] = requirementGroups.get(code);
     }
 
@@ -655,6 +781,13 @@ async function propagateWebpage() {
         document.getElementById("import_data_file").click();
     });
     document.getElementById("import_data_file").addEventListener("change", importLocalData);
+    if (window.SyncClient) SyncClient.initUi();
+    document.getElementById("solver_run").addEventListener("click", runSolver);
+    // Delegated: the chips are re-rendered whenever the schedule changes.
+    document.getElementById("solver_courses").addEventListener("click", e => {
+        const btn = closestEl(e.target, ".solver_course");
+        if (btn) solverToggleCourse(btn.dataset.code);
+    });
 
     for (let i = 0; i < WEEKDAYS; i++) {
         document.getElementById(`schedule_exclude_${i}_pre`).addEventListener("input", handleValueChange);
@@ -804,15 +937,19 @@ async function toggleL2Mode() {
 function applyL2ToggleState(loading = false) {
     const btn = document.getElementById("l2_toggle");
     const status = document.getElementById("l2_status");
+    // The L2 slider only appears when a separate L2 file exists to optionally download.
     const available = currentSchema.l2Available === true;
-    // The prereq explorer only has data where L2 does, so gate its entry point on
-    // the same source of truth as the L2 slider.
+    // The prereq explorer entry point shows when a prerequisite SOURCE exists for this
+    // school|term — matching prereqs.js's own candidate rule. That's an available L2 file
+    // (WashU; the explorer loads it itself regardless of this page's L2 toggle) OR prereq
+    // data already present in the base catalog (CWRU).
+    const hasPrereqs = currentSchema.l2Available === true || !!(currentSchema.caps && currentSchema.caps.prereqs);
     const prereqLink = document.getElementById("prereq_link");
     if (prereqLink) {
-        prereqLink.classList.toggle("hidden", !available);
-        prereqLink.classList.toggle("inline-flex", available);
-        prereqLink.setAttribute("aria-hidden", available ? "false" : "true");
-        prereqLink.tabIndex = available ? 0 : -1;
+        prereqLink.classList.toggle("hidden", !hasPrereqs);
+        prereqLink.classList.toggle("inline-flex", hasPrereqs);
+        prereqLink.setAttribute("aria-hidden", hasPrereqs ? "false" : "true");
+        prereqLink.tabIndex = hasPrereqs ? 0 : -1;
     }
     if (!btn) return;
     btn.classList.toggle("hidden", !available);
@@ -867,14 +1004,16 @@ function renderColumnMenu() {
         <label class="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer select-none">
             <input type="checkbox" class="result_column_toggle h-3.5 w-3.5 rounded accent-accent-600" data-column="${escapeAttr(col.id)}" ${selected.has(col.id) ? "checked" : ""}>
             <span class="text-sm text-slate-700 dark:text-slate-200">${escapeHtml(col.label)}</span>
-            ${col.id === "location" ? `<span class="ml-auto text-[10px] font-semibold uppercase tracking-wide text-accent-600 dark:text-accent-400">L2</span>` : ""}
         </label>
     `).join("");
     const note = document.getElementById("columns_note");
     if (note) {
-        note.textContent = currentSchema.l2Available
-            ? (config.l2_enabled ? "Location is available from L2 data." : "Turn on L2 mode to add the Location column.")
-            : "No L2 data is available for this term.";
+        const hasLoc = currentSchema.caps && currentSchema.caps.locations;
+        note.textContent = hasLoc
+            ? "Toggle which columns appear in the results table."
+            : (currentSchema.l2Available
+                ? "Turn on L2 mode to add the Location column."
+                : "No location data is available for this term.");
     }
     list.querySelectorAll(".result_column_toggle").forEach(input =>
         input.addEventListener("change", handleColumnToggle));
@@ -995,10 +1134,10 @@ function restorePrefixPreset(idx) {
     refreshResults();
 }
 
-function renamePrefixPreset(idx) {
+async function renamePrefixPreset(idx) {
     const p = config.prefix_presets[idx];
     if (!p) return;
-    const name = window.prompt("Rename preset:", p.name);
+    const name = await uiPrompt({title: "Rename preset", value: p.name});
     if (name === null) return;
     const trimmed = name.trim();
     if (trimmed) p.name = trimmed;
@@ -1206,9 +1345,9 @@ function resultColumnDefs() {
         { id: "crn", label: "CRN", width: "5.5rem", min: 72, available: () => !!currentSchema.showCRN },
         { id: "course", label: "Course", width: currentSchema.showCRN ? "7rem" : "9rem", min: currentSchema.showCRN ? 96 : 120, available: () => true },
         { id: "title", label: "Title", width: null, min: 160, available: () => true },
-        { id: "location", label: "Location", width: "8rem", min: 112, available: () => config.l2_enabled === true && currentSchema.hasL2 === true },
+        { id: "location", label: "Location", width: "8rem", min: 112, available: () => currentSchema.caps && currentSchema.caps.locations === true },
         { id: "days", label: "Days", width: "3.5rem", min: 48, available: () => true },
-        { id: "time", label: "Time", width: "9rem", min: 120, available: () => true },
+        { id: "time", label: "Time", width: "12rem", min: 176, available: () => true },
         { id: "instructor", label: "Instructor", width: "8rem", min: 112, available: () => true },
         { id: "cap", label: "Cap", width: "4.5rem", min: 64, available: () => true }
     ];
@@ -1339,10 +1478,10 @@ function renderSchedulePresets(animateIdx = -1) {
     wrap.querySelectorAll(".sched_delete").forEach(b => b.addEventListener("click", () => deleteSchedule(+b.dataset.idx)));
 }
 
-function renameSchedule(idx) {
+async function renameSchedule(idx) {
     const p = (config.schedules || [])[idx];
     if (!p) return;
-    const name = window.prompt("Rename schedule:", p.name);
+    const name = await uiPrompt({title: "Rename schedule", value: p.name});
     if (name === null) return;
     const trimmed = name.trim();
     if (trimmed) p.name = trimmed;
@@ -1452,6 +1591,138 @@ function updateExclusionsCount() {
 }
 
 // --------------------------------------------------------------------------
+// Modal dialogs
+//
+// Replaces window.confirm/prompt so destructive actions and renames look like the
+// rest of the app. Promise-based, so call sites become `await uiConfirm({...})`.
+// Only one dialog is ever open; opening a second resolves the first as cancelled.
+// --------------------------------------------------------------------------
+
+const MODAL_FOCUSABLE = 'button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])';
+
+let modalState = null;
+
+function closeModal(result) {
+    if (!modalState) return;
+    const {resolve, previousFocus, keyHandler} = modalState;
+    modalState = null;
+    document.removeEventListener("keydown", keyHandler, true);
+    const root = document.getElementById("app_modal");
+    if (root) {
+        root.classList.add("hidden");
+        root.innerHTML = "";
+    }
+    // Send focus back where it came from, so keyboard users don't lose their place.
+    if (previousFocus && document.contains(previousFocus)) {
+        try { previousFocus.focus(); } catch (e) { /* element may no longer be focusable */ }
+    }
+    resolve(result);
+}
+
+// opts: {title, message, confirmLabel, cancelLabel, danger, input:{value, placeholder}}
+// Resolves to false/null on cancel, true or the input's string value on confirm.
+function openModal(opts) {
+    const o = opts || {};
+    const wantsInput = !!o.input;
+    const cancelValue = wantsInput ? null : false;
+
+    if (modalState) closeModal(cancelValue);
+
+    const root = document.getElementById("app_modal");
+    if (!root) {
+        // No host element (e.g. a page that doesn't include the modal markup) —
+        // fall back rather than silently dropping the interaction.
+        if (wantsInput) return Promise.resolve(window.prompt(o.title || "", (o.input && o.input.value) || ""));
+        return Promise.resolve(window.confirm(o.message || o.title || ""));
+    }
+
+    const confirmClasses = o.danger
+        ? "bg-rose-600 hover:bg-rose-700"
+        : "bg-accent-600 hover:bg-accent-700";
+
+    root.innerHTML = `
+        <div class="modal-backdrop absolute inset-0 bg-slate-900/50 dark:bg-slate-950/70 backdrop-blur-[2px]"></div>
+        <div class="relative min-h-full flex items-center justify-center p-4">
+            <div class="modal-panel w-full max-w-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden"
+                 role="dialog" aria-modal="true" aria-labelledby="app_modal_title">
+                <div class="p-4 space-y-2">
+                    <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100" id="app_modal_title">${escapeHtml(o.title || "")}</h2>
+                    ${o.message ? `<p class="text-xs leading-relaxed text-slate-500 dark:text-slate-400">${escapeHtml(o.message)}</p>` : ""}
+                    ${wantsInput ? `
+                    <input class="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-accent-500/40 focus:border-accent-500"
+                           id="app_modal_input" type="text" value="${escapeAttr(o.input.value || "")}" placeholder="${escapeAttr(o.input.placeholder || "")}">` : ""}
+                </div>
+                <div class="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40">
+                    <button class="btn-press text-xs font-medium px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors"
+                            id="app_modal_cancel" type="button">${escapeHtml(o.cancelLabel || "Cancel")}</button>
+                    <button class="btn-press text-xs font-medium px-3 py-1.5 rounded-md text-white transition-colors ${confirmClasses}"
+                            id="app_modal_confirm" type="button">${escapeHtml(o.confirmLabel || "Confirm")}</button>
+                </div>
+            </div>
+        </div>`;
+    root.classList.remove("hidden");
+
+    const panel = root.querySelector(".modal-panel");
+    const input = document.getElementById("app_modal_input");
+    const confirmValue = () => (wantsInput ? (input ? input.value : "") : true);
+
+    const keyHandler = (e) => {
+        if (e.key === "Escape") {
+            e.preventDefault();
+            closeModal(cancelValue);
+            return;
+        }
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            closeModal(confirmValue());
+            return;
+        }
+        // Keep focus inside the dialog while it is open.
+        if (e.key === "Tab") {
+            const items = [...panel.querySelectorAll(MODAL_FOCUSABLE)].filter(el => !el.disabled);
+            if (!items.length) return;
+            const first = items[0];
+            const last = items[items.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+    };
+
+    const promise = new Promise(resolve => {
+        modalState = {resolve, previousFocus: document.activeElement, keyHandler};
+    });
+
+    document.addEventListener("keydown", keyHandler, true);
+    document.getElementById("app_modal_cancel").addEventListener("click", () => closeModal(cancelValue));
+    document.getElementById("app_modal_confirm").addEventListener("click", () => closeModal(confirmValue()));
+    root.querySelector(".modal-backdrop").addEventListener("click", () => closeModal(cancelValue));
+
+    if (input) {
+        input.focus();
+        input.select();
+    } else {
+        document.getElementById("app_modal_confirm").focus();
+    }
+
+    return promise;
+}
+
+function uiConfirm(opts) {
+    return openModal(Object.assign({confirmLabel: "Confirm"}, opts));
+}
+
+function uiPrompt(opts) {
+    const o = Object.assign({confirmLabel: "Save"}, opts);
+    o.input = {value: o.value || "", placeholder: o.placeholder || ""};
+    return openModal(o);
+}
+
+// --------------------------------------------------------------------------
 // Theme
 // --------------------------------------------------------------------------
 
@@ -1461,22 +1732,49 @@ function toggleTheme() {
     renderCalendar(); // recolor gridlines etc.
 }
 
+// Everything this device has stored, in one payload. Shared by the export file and
+// by cloud sync, so both always capture exactly the same thing.
+// Keys prefixed `sync_` are per-device credentials, not user data — they are skipped
+// so a profile can never carry another device's sync key with it.
+function snapshotLocalData() {
+    saveConfig();
+    const stored = {};
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || key.startsWith("sync_")) continue;
+        stored[key] = localStorage.getItem(key);
+    }
+    return {
+        app: "class_schedule_picker",
+        version: 1,
+        exported_at: new Date().toISOString(),
+        localStorage: stored
+    };
+}
+
+// Inverse of snapshotLocalData(). Replaces all local data, preserving this device's
+// own `sync_` keys across the clear(). Throws if the payload isn't ours.
+function applyLocalDataPayload(payload) {
+    if (!payload || payload.app !== "class_schedule_picker" || !payload.localStorage || typeof payload.localStorage !== "object") {
+        throw new Error("Not a Schedule Picker payload.");
+    }
+    const keptSync = {};
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("sync_")) keptSync[key] = localStorage.getItem(key);
+    }
+    localStorage.clear();
+    for (const [key, value] of Object.entries(payload.localStorage)) {
+        if (key.startsWith("sync_")) continue;
+        localStorage.setItem(key, String(value));
+    }
+    for (const [key, value] of Object.entries(keptSync)) localStorage.setItem(key, value);
+}
+
 function exportLocalData() {
     const status = document.getElementById("export_data_status");
     try {
-        saveConfig();
-        const stored = {};
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            stored[key] = localStorage.getItem(key);
-        }
-
-        const payload = {
-            app: "class_schedule_picker",
-            version: 1,
-            exported_at: new Date().toISOString(),
-            localStorage: stored
-        };
+        const payload = snapshotLocalData();
         const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
         const blob = new Blob([encoded], {type: "text/plain;charset=utf-8"});
         const url = URL.createObjectURL(blob);
@@ -1510,17 +1808,20 @@ async function importLocalData(e) {
     try {
         const encoded = (await file.text()).trim();
         const payload = JSON.parse(decodeURIComponent(escape(atob(encoded))));
-        if (payload.app !== "class_schedule_picker" || !payload.localStorage || typeof payload.localStorage !== "object") {
+        // Reject a bad file before asking the user to confirm anything.
+        if (!payload || payload.app !== "class_schedule_picker" || !payload.localStorage || typeof payload.localStorage !== "object") {
             throw new Error("Not a Schedule Picker export file.");
         }
 
-        const ok = window.confirm("Importing will replace saved schedules, starred classes, filters, and other local settings on this computer. Continue?");
+        const ok = await uiConfirm({
+            title: "Import data?",
+            message: "This replaces the saved schedules, starred classes, filters, and other local settings on this computer.",
+            confirmLabel: "Import",
+            danger: true
+        });
         if (!ok) return;
 
-        localStorage.clear();
-        for (const [key, value] of Object.entries(payload.localStorage)) {
-            localStorage.setItem(key, String(value));
-        }
+        applyLocalDataPayload(payload);
         if (status) status.textContent = "Imported";
         window.setTimeout(() => window.location.reload(), 300);
     } catch (err) {
@@ -1532,6 +1833,563 @@ async function importLocalData(e) {
     } finally {
         input.value = "";
     }
+}
+
+// --------------------------------------------------------------------------
+// Solver
+//
+// Enumerates every combination of sections that satisfies each selected course's
+// component requirements without a time clash. Courses are taken from whatever is
+// added or starred on the current schedule, collapsed to their parent course, so a
+// lecture "01" and a lab "A" of the same class count once.
+// --------------------------------------------------------------------------
+
+const SOLVER_MAX_SOLUTIONS = 400;   // stop collecting past this; the count still reports
+const SOLVER_NODE_BUDGET = 300000;  // hard ceiling so a huge search can't hang the tab
+const SOLVER_RENDER_LIMIT = 40;
+
+let solverResults = [];
+let solverCounts = null;
+// representative section _key -> the interchangeable sections it stands in for
+let solverAlternates = new Map();
+
+// Parent course codes implied by the current schedule (added + starred).
+function solverCourseCodes() {
+    const codes = new Set();
+    for (const id of [...(config.courses || []), ...(config.favorites || [])]) {
+        const course = classes[id];
+        if (course && course["Course"]) codes.add(course["Course"]);
+    }
+    return [...codes].sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: "base"}));
+}
+
+function solverIsExcluded(code) {
+    return (config.solver_excluded || []).includes(code);
+}
+
+function solverSelectedCodes() {
+    return solverCourseCodes().filter(c => !solverIsExcluded(c));
+}
+
+// What a student must enrol in for this course, as a list of groups to pick one from.
+// Prefers the shared L2-aware model; otherwise falls back to the numbered/lettered
+// convention (a course with both needs one of each), and finally to a single pick.
+function solverRequirementForCourse(courseCode) {
+    const shared = sectionRequirementForCourse(courseCode);
+    if (shared && shared.groups && shared.groups.length) return shared;
+
+    const sections = sectionsForCourse(courseCode);
+    const nums = sections.filter(s => sectionKindOf(s["Section"]) === "num");
+    const alphas = sections.filter(s => sectionKindOf(s["Section"]) === "alpha");
+    if (nums.length && alphas.length) {
+        return {
+            source: "fallback",
+            groups: [
+                {id: "num", label: sectionRangeLabel(nums.map(s => s["Section"])), kind: "num", sections: []},
+                {id: "alpha", label: sectionRangeLabel(alphas.map(s => s["Section"])), kind: "alpha", sections: []}
+            ]
+        };
+    }
+    return {source: "single", groups: [{id: "any", label: "Section", sections: [], any: true}]};
+}
+
+// Prefer the real component name ("Lecture", "Laboratory") over a section range
+// when L2 supplies one — "Lecture + Discussion" reads better than "01-06 + A-N".
+function solverGroupLabel(courseCode, group) {
+    const formats = [...new Set(
+        solverSectionsForGroup(courseCode, group).map(s => s["_l2_format"]).filter(Boolean)
+    )];
+    if (formats.length === 1) return formats[0];
+    return group.label || "Section";
+}
+
+function solverSectionsForGroup(courseCode, group) {
+    const sections = sectionsForCourse(courseCode);
+    if (group.any) return sections;
+    return sections.filter(s => sectionMatchesRequirement(s, group));
+}
+
+// Busy windows as day-indexed intervals, mirroring calculateSchedule().
+function solverBusyBlocks() {
+    const blocks = [[], [], [], [], [], [], []];
+    if (config.busy_enabled === false) return blocks;
+    for (let i = 0; i < WEEKDAYS; i++) {
+        const pre = toMinutes(String(config[`schedule_exclude_${i}_pre`] || "").replace(":", ""));
+        const post = toMinutes(String(config[`schedule_exclude_${i}_post`] || "").replace(":", ""));
+        if (pre !== null && post !== null && post > pre) blocks[i].push({start: pre, end: post});
+    }
+    return blocks;
+}
+
+// Same padded-interval test the results filter uses.
+function solverOverlaps(a, b, margin) {
+    return a.start < b.end + margin && b.start - margin < a.end;
+}
+
+function solveSchedules() {
+    const margin = Number.parseInt(config.margin_time, 10) || 0;
+    const busy = solverBusyBlocks();
+    const excluded = new Set(config.course_excludes || []);
+    const codes = solverSelectedCodes();
+
+    const slots = [];
+    let productAll = 1;      // distinct combinations if nothing were hidden
+    let productKept = 1;     // distinct combinations actually searched
+    let productRaw = 1;      // combinations before collapsing interchangeable sections
+    const blocked = [];      // groups with every section hidden
+    solverAlternates = new Map();
+
+    // Sections that meet at the same times with the same instructor are
+    // interchangeable — the results table already collapses them, and expanding
+    // them here would emit N indistinguishable schedules. Keep one representative
+    // (preferring one with open seats) and remember the rest.
+    const collapse = (sections) => mergeIdentical(sections).map(members => {
+        const key = pickDefaultKey(members);
+        const rep = members.find(m => m["_key"] === key) || members[0];
+        if (members.length > 1) solverAlternates.set(rep["_key"], members.filter(m => m !== rep));
+        return rep;
+    });
+
+    for (const code of codes) {
+        const requirement = solverRequirementForCourse(code);
+        for (const group of requirement.groups) {
+            const all = solverSectionsForGroup(code, group);
+            if (!all.length) continue;                       // nothing to choose here
+            const kept = all.filter(s => !excluded.has(s["_key"]));
+            productAll *= collapse(all).length;
+            if (!kept.length) {
+                blocked.push(`${code} ${solverGroupLabel(code, group)}`.trim());
+                continue;
+            }
+            const candidates = collapse(kept);
+            productRaw *= kept.length;
+            productKept *= candidates.length;
+            slots.push({
+                code,
+                label: solverGroupLabel(code, group),
+                candidates,
+                meetings: candidates.map(s => parseMeetings(s))
+            });
+        }
+    }
+
+    const counts = {
+        courses: codes.length,
+        slots: slots.length,
+        considered: slots.length ? productKept : 0,
+        hiddenByExcluded: Math.max(0, (slots.length ? productAll : 0) - (slots.length ? productKept : 0)),
+        duplicatesCollapsed: slots.length ? Math.max(0, productRaw - productKept) : 0,
+        rejectedBusy: 0,
+        rejectedClash: 0,
+        blocked,
+        truncated: false
+    };
+    if (!slots.length) return {solutions: [], counts};
+
+    // Fewest options first, so the search prunes as early as possible.
+    slots.sort((a, b) => a.candidates.length - b.candidates.length);
+
+    // suffix[i] = number of full combinations below slot i, i.e. how many
+    // permutations a single rejection at slot i eliminates.
+    const suffix = new Array(slots.length).fill(1);
+    for (let i = slots.length - 2; i >= 0; i--) suffix[i] = suffix[i + 1] * slots[i + 1].candidates.length;
+
+    const solutions = [];
+    const chosen = [];
+    const activeMeetings = [];
+    let nodes = 0;
+
+    function dfs(i) {
+        if (counts.truncated) return;
+        if (i === slots.length) {
+            solutions.push(chosen.map(c => c.section));
+            if (solutions.length >= SOLVER_MAX_SOLUTIONS) counts.truncated = true;
+            return;
+        }
+        const slot = slots[i];
+        for (let ci = 0; ci < slot.candidates.length; ci++) {
+            if (counts.truncated) return;
+            if (++nodes > SOLVER_NODE_BUDGET) { counts.truncated = true; return; }
+
+            const meets = slot.meetings[ci];
+            let reason = null;
+            for (const m of meets) {
+                if (busy[m.day].some(b => solverOverlaps(m, b, margin))) { reason = "busy"; break; }
+            }
+            if (!reason) {
+                for (const m of meets) {
+                    if (activeMeetings.some(pm => pm.day === m.day && solverOverlaps(m, pm, margin))) { reason = "clash"; break; }
+                }
+            }
+            if (reason) {
+                // Everything below this choice is eliminated too — count it once, exactly.
+                if (reason === "busy") counts.rejectedBusy += suffix[i];
+                else counts.rejectedClash += suffix[i];
+                continue;
+            }
+
+            chosen.push({slot, section: slot.candidates[ci]});
+            const mark = activeMeetings.length;
+            for (const m of meets) activeMeetings.push(m);
+            dfs(i + 1);
+            activeMeetings.length = mark;
+            chosen.pop();
+        }
+    }
+
+    dfs(0);
+    return {solutions, counts};
+}
+
+// --------------------------------------------------------------------------
+// Realism scoring — a rough "would a person actually want this?" heuristic.
+// Deliberately soft: it only orders the results, it never removes any.
+// --------------------------------------------------------------------------
+
+const LUNCH_START = 11 * 60, LUNCH_END = 14 * 60, LUNCH_MIN = 45;
+const DAY_START_OK = 9 * 60, DAY_END_OK = 18 * 60, LONG_GAP = 150;
+
+function solverDayIntervals(sections) {
+    const days = [[], [], [], [], [], [], []];
+    for (const s of sections) for (const m of parseMeetings(s)) days[m.day].push(m);
+    for (const d of days) d.sort((a, b) => a.start - b.start);
+    return days;
+}
+
+function scoreSolution(sections) {
+    const days = solverDayIntervals(sections);
+    const active = days.filter(d => d.length);
+    if (!active.length) return {total: 0, lunch: 0, balance: 0, edges: 0, gaps: 0};
+
+    // Lunch: a free stretch of >= 45 min somewhere in 11:00-14:00.
+    let lunchOk = 0;
+    for (const d of active) {
+        let cursor = LUNCH_START, best = 0;
+        for (const m of d) {
+            if (m.end <= LUNCH_START || m.start >= LUNCH_END) continue;
+            best = Math.max(best, Math.min(m.start, LUNCH_END) - cursor);
+            cursor = Math.max(cursor, Math.min(m.end, LUNCH_END));
+        }
+        best = Math.max(best, LUNCH_END - cursor);
+        if (best >= LUNCH_MIN) lunchOk++;
+    }
+    const lunch = lunchOk / active.length;
+
+    // Balance: an even spread of teaching minutes across the days actually used.
+    const loads = active.map(d => d.reduce((sum, m) => sum + (m.end - m.start), 0));
+    const mean = loads.reduce((a, b) => a + b, 0) / loads.length;
+    const sd = Math.sqrt(loads.reduce((a, l) => a + (l - mean) ** 2, 0) / loads.length);
+    const balance = mean > 0 ? Math.max(0, 1 - sd / mean) : 0;
+
+    // Edges: classes inside civilised hours.
+    let inHours = 0, totalMeetings = 0;
+    for (const d of active) for (const m of d) {
+        totalMeetings++;
+        if (m.start >= DAY_START_OK && m.end <= DAY_END_OK) inHours++;
+    }
+    const edges = totalMeetings ? inHours / totalMeetings : 0;
+
+    // Gaps: penalise long dead stretches between classes on the same day.
+    let deadMinutes = 0, spanMinutes = 0;
+    for (const d of active) {
+        spanMinutes += d[d.length - 1].end - d[0].start;
+        for (let i = 1; i < d.length; i++) {
+            const gap = d[i].start - d[i - 1].end;
+            if (gap > LONG_GAP) deadMinutes += gap - LONG_GAP;
+        }
+    }
+    const gaps = spanMinutes > 0 ? Math.max(0, 1 - deadMinutes / spanMinutes) : 1;
+
+    const total = Math.round(100 * (0.40 * lunch + 0.20 * balance + 0.20 * edges + 0.20 * gaps));
+    return {total, lunch, balance, edges, gaps};
+}
+
+// --------------------------------------------------------------------------
+// Solver UI
+// --------------------------------------------------------------------------
+
+function renderSolverCourses() {
+    const wrap = document.getElementById("solver_courses");
+    const summary = document.getElementById("solver_summary");
+    if (!wrap) return;
+    const codes = solverCourseCodes();
+
+    if (!codes.length) {
+        wrap.innerHTML = `<p class="text-xs text-slate-400 dark:text-slate-500">Add or star some classes and they'll show up here.</p>`;
+        if (summary) summary.textContent = "0 classes";
+        return;
+    }
+
+    wrap.innerHTML = codes.map(code => {
+        const on = !solverIsExcluded(code);
+        const requirement = solverRequirementForCourse(code);
+        const parts = requirement.groups.length > 1
+            ? requirement.groups.map(g => escapeHtml(solverGroupLabel(code, g))).join(" + ")
+            : "";
+        const cls = on
+            ? "border-accent-300 bg-accent-50 text-accent-700 dark:border-accent-500/40 dark:bg-accent-500/10 dark:text-accent-300"
+            : "border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-500 line-through";
+        return `<button class="solver_course btn-press inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${cls}"
+                        data-code="${escapeAttr(code)}" type="button" aria-pressed="${on ? "true" : "false"}">
+                    <span class="h-2 w-2 rounded-full shrink-0" style="background:${on ? courseColor(code) : "currentColor"}"></span>
+                    <span>${escapeHtml(code)}</span>${parts ? `<span class="opacity-60 font-normal">${parts}</span>` : ""}
+                </button>`;
+    }).join("");
+
+    const selected = solverSelectedCodes().length;
+    if (summary) summary.textContent = `${selected} of ${codes.length} class${codes.length === 1 ? "" : "es"}`;
+}
+
+function solverToggleCourse(code) {
+    const list = Array.isArray(config.solver_excluded) ? config.solver_excluded.slice() : [];
+    const i = list.indexOf(code);
+    if (i === -1) list.push(code); else list.splice(i, 1);
+    config.solver_excluded = list;
+    saveConfig();
+    renderSolverCourses();
+    // Previous results no longer match the selection.
+    solverResults = [];
+    solverCounts = null;
+    renderSolverResults();
+    const status = document.getElementById("solver_status");
+    if (status) status.textContent = "";
+}
+
+function solverStatusText(counts) {
+    if (!counts) return "";
+    const n = (v) => v.toLocaleString();
+    const shown = solverResults.length;
+    const bits = [`${n(shown)}${counts.truncated ? "+" : ""} working schedule${shown === 1 ? "" : "s"}`];
+
+    // Reasons a combination didn't make the list, biggest cause first. A single total
+    // up front, then the breakdown, so the numbers don't read as one long run-on.
+    const reasons = [
+        {n: counts.rejectedClash || 0, label: "time clashes"},
+        {n: counts.hiddenByExcluded || 0, label: "hidden sections"},
+        {n: counts.rejectedBusy || 0, label: "busy times"}
+    ].filter(r => r.n).sort((a, b) => b.n - a.n);
+    if (reasons.length) {
+        const total = reasons.reduce((sum, r) => sum + r.n, 0);
+        const breakdown = reasons.map(r => `${n(r.n)} ${r.label}`).join(", ");
+        bits.push(reasons.length > 1
+            ? `${n(total)} ruled out (${breakdown})`
+            : `${breakdown} ruled out`);
+    }
+
+    if (counts.duplicatesCollapsed) bits.push(`${n(counts.duplicatesCollapsed)} duplicates merged`);
+    if (counts.truncated) bits.push(`showing the top ${n(shown)}`);
+    return bits.join(" · ");
+}
+
+const SOLVER_PREVIEW_HOUR_H = 24;
+
+// "Johnson, Silas" -> "Johnson". The full name stays in the block tooltip.
+function solverInstructorShort(name) {
+    const text = String(name || "").trim();
+    if (!text) return "";
+    return text.split(",")[0].trim();
+}
+
+// One line per course listing who teaches it, so two options that differ only by
+// instructor are told apart without hovering.
+function solverRosterHtml(sections) {
+    const byCourse = new Map();
+    for (const section of sections) {
+        const code = section["Course"] || "";
+        if (!byCourse.has(code)) byCourse.set(code, new Set());
+        const who = solverInstructorShort(section["Instructor"]);
+        if (who) byCourse.get(code).add(who);
+    }
+    return [...byCourse.entries()].map(([code, names]) => {
+        const who = [...names].join(" / ");
+        return `<span class="inline-flex items-center gap-1 min-w-0 max-w-full">
+            <span class="h-1.5 w-1.5 rounded-full shrink-0" style="background:${courseColor(code)}"></span>
+            <span class="shrink-0 font-medium">${escapeHtml(code)}</span>
+            <span class="truncate opacity-70">${who ? escapeHtml(who) : "staff TBA"}</span>
+        </span>`;
+    }).join("");
+}
+
+// One time window shared by every preview, so the options can be compared at a
+// glance instead of each being scaled to its own contents.
+function solverPreviewWindow(entries) {
+    let min = Infinity, max = -Infinity;
+    for (const entry of entries) {
+        for (const section of entry.sections) {
+            for (const m of parseMeetings(section)) {
+                min = Math.min(min, m.start);
+                max = Math.max(max, m.end);
+            }
+        }
+    }
+    const busy = solverBusyBlocks();
+    for (let d = 0; d < WEEKDAYS; d++) {
+        for (const b of busy[d]) { min = Math.min(min, b.start); max = Math.max(max, b.end); }
+    }
+    if (!isFinite(min)) return null;
+    return {startHour: Math.floor(min / 60), endHour: Math.ceil(max / 60)};
+}
+
+// A thumbnail of the week. Exact section codes live in the hover tooltip rather
+// than on the block, which at this size only has room for the course.
+function solverMiniCalendar(sections, win) {
+    const busy = solverBusyBlocks();
+    const blocks = [[], [], [], [], [], [], []];
+    for (const section of sections) {
+        for (const m of parseMeetings(section)) {
+            blocks[m.day].push({
+                ...m,
+                label: section["Course"] || "",
+                section: section["Section"] || "",
+                key: section["_key"],
+                instructor: String(section["Instructor"] || "").trim(),
+                color: courseColor(section["Course"] || "")
+            });
+        }
+    }
+    for (let d = 0; d < WEEKDAYS; d++) {
+        for (const b of busy[d]) blocks[d].push({day: d, start: b.start, end: b.end, busy: true});
+    }
+
+    const winStart = win.startHour * 60;
+    const height = (win.endHour - win.startHour) * SOLVER_PREVIEW_HOUR_H;
+    const isDark = document.documentElement.classList.contains("dark");
+    const lineColor = isDark ? "rgba(148,163,184,0.16)" : "rgba(100,116,139,0.14)";
+
+    const cols = [0, 1, 2, 3, 4].map(d => {
+        const laid = layoutDay(blocks[d]);
+        const inner = laid.map(b => {
+            const top = ((b.start - winStart) / 60) * SOLVER_PREVIEW_HOUR_H;
+            const h = Math.max(((b.end - b.start) / 60) * SOLVER_PREVIEW_HOUR_H, 9);
+            const w = 100 / b.cols;
+            const left = b.col * w;
+            const box = `top:${top}px;height:${h}px;left:calc(${left}% + 1px);width:calc(${w}% - 2px)`;
+            if (b.busy) {
+                return `<div class="absolute rounded-sm border border-dashed border-slate-300 dark:border-slate-600 bg-slate-200/40 dark:bg-slate-700/25" style="${box}"></div>`;
+            }
+            const alts = solverAlternates.get(b.key) || [];
+            const altText = alts.length ? ` (or ${alts.map(a => a["Section"]).join(", ")})` : "";
+            const whoText = b.instructor ? ` · ${b.instructor}` : "";
+            const tip = `${b.label} ${b.section}${altText}${whoText} · ${dayShort[b.day]} ${formatMinutes(b.start)}–${formatMinutes(b.end)}`;
+            return `<div class="tip-trigger absolute rounded-sm text-white overflow-hidden px-0.5 leading-none flex items-center shadow-sm"
+                         data-tip="${escapeAttr(tip)}" style="${box};background:${b.color};font-size:8px">${h >= 13 ? escapeHtml(b.label) : ""}</div>`;
+        }).join("");
+        return `<div class="flex-1 min-w-0">
+            <div class="text-center text-[9px] font-semibold text-slate-400 dark:text-slate-500 pb-0.5">${dayShort[d]}</div>
+            <div class="relative cal-grid-lines rounded-sm bg-slate-50 dark:bg-slate-900/40"
+                 style="--hour-h:${SOLVER_PREVIEW_HOUR_H}px;--cal-line:${lineColor};height:${height}px">${inner}</div>
+        </div>`;
+    }).join("");
+
+    return `<div class="flex gap-0.5">${cols}</div>`;
+}
+
+function renderSolverResults() {
+    const wrap = document.getElementById("solver_results");
+    if (!wrap) return;
+    if (!solverResults.length) {
+        wrap.innerHTML = solverCounts && solverCounts.considered
+            ? `<p class="text-xs text-amber-600 dark:text-amber-400">No combination works. Loosen your busy times, un-hide sections, or drop a class above.</p>`
+            : "";
+        if (solverCounts && solverCounts.blocked && solverCounts.blocked.length) {
+            wrap.innerHTML += `<p class="mt-1 text-xs text-amber-600 dark:text-amber-400">Every section is hidden for: ${escapeHtml(solverCounts.blocked.join(", "))}.</p>`;
+        }
+        return;
+    }
+
+    const shown = solverResults.slice(0, SOLVER_RENDER_LIMIT);
+    const win = solverPreviewWindow(shown);
+    wrap.innerHTML = `
+        <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            ${shown.map((entry, idx) => {
+                const score = entry.score;
+                return `
+                <div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/40 p-2.5">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">#${idx + 1}</span>
+                        <span class="tnum text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-accent-100 text-accent-700 dark:bg-accent-500/15 dark:text-accent-300 tip-trigger"
+                              data-tip="Realism score — lunch break, even spread, sane hours, few long gaps">${score.total}</span>
+                    </div>
+                    <div class="mt-1.5">${win ? solverMiniCalendar(entry.sections, win) : ""}</div>
+                    <div class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500 dark:text-slate-400">${solverRosterHtml(entry.sections)}</div>
+                    <div class="mt-1.5 flex items-center gap-1.5">
+                        <button class="solver_save btn-press flex-1 text-[11px] font-medium px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors"
+                                data-idx="${idx}" type="button">Save as new</button>
+                        <button class="solver_replace btn-press flex-1 text-[11px] font-medium px-2 py-1 rounded bg-accent-600 text-white hover:bg-accent-700 transition-colors"
+                                data-idx="${idx}" type="button">Use this</button>
+                    </div>
+                </div>`;
+            }).join("")}
+        </div>
+        ${solverResults.length > SOLVER_RENDER_LIMIT
+            ? `<p class="mt-2 text-xs text-slate-400 dark:text-slate-500">Showing the top ${SOLVER_RENDER_LIMIT} of ${solverResults.length} — the best-scoring come first.</p>`
+            : ""}`;
+
+    wrap.querySelectorAll(".solver_save").forEach(b => b.addEventListener("click", () => solverApply(+b.dataset.idx, "new")));
+    wrap.querySelectorAll(".solver_replace").forEach(b => b.addEventListener("click", () => solverApply(+b.dataset.idx, "replace")));
+    initTooltips();
+}
+
+function runSolver() {
+    const status = document.getElementById("solver_status");
+    const codes = solverSelectedCodes();
+    if (!codes.length) {
+        solverResults = [];
+        solverCounts = null;
+        renderSolverResults();
+        if (status) status.textContent = "Pick at least one class above.";
+        return;
+    }
+    if (status) status.textContent = "Solving…";
+
+    // Yield once so "Solving…" paints before a long search. Deliberately a timeout
+    // rather than requestAnimationFrame, which never fires in a backgrounded tab.
+    window.setTimeout(() => {
+        const {solutions, counts} = solveSchedules();
+        // Score once per solution — scoring walks every meeting, so doing it inside
+        // the comparator would repeat that work O(n log n) times.
+        const scored = solutions.map(sections => ({sections, score: scoreSolution(sections)}));
+        scored.sort((x, y) => y.score.total - x.score.total);
+        solverResults = scored;
+        solverCounts = counts;
+        renderSolverResults();
+        if (status) status.textContent = solverStatusText(counts);
+    }, 0);
+}
+
+async function solverApply(idx, mode) {
+    const entry = solverResults[idx];
+    if (!entry) return;
+    const keys = entry.sections.map(s => s["_key"]);
+
+    if (mode === "replace") {
+        const ok = await uiConfirm({
+            title: "Use this schedule?",
+            message: "The classes currently added to this schedule are replaced by the sections in this option. Starred classes are kept.",
+            confirmLabel: "Use it",
+            danger: true
+        });
+        if (!ok) return;
+        config.courses = keys;
+    } else {
+        syncActiveSchedule();
+        config.schedules.push({
+            name: nextScheduleName("Option"),
+            courses: keys.slice(),
+            favorites: (config.favorites || []).slice(),
+            show_conflict_crns: []
+        });
+        config.active_schedule = config.schedules.length - 1;
+        loadActiveSchedule();
+    }
+
+    saveConfig();
+    renderSchedulePresets(config.active_schedule);
+    calculateSchedule();
+    refreshResults();
+    renderSolverCourses();
+    const status = document.getElementById("solver_status");
+    if (status) status.textContent = mode === "replace" ? "Applied to this schedule." : "Saved as a new schedule.";
 }
 
 // --------------------------------------------------------------------------
@@ -1633,8 +2491,9 @@ function refreshResults() {
 
     // Search
     if (config.search_bar.length > 0) {
+        const richKeys = currentSchema.caps && (currentSchema.caps.locations || currentSchema.caps.eligibility);
         const fuse = new Fuse(result_classes, {
-            keys: config.l2_enabled
+            keys: richKeys
                 ? ["Course", "Title", "Instructor", "Place", "_campus", "_l2_eligibility"]
                 : ["Course", "Title", "Instructor"],
             minMatchCharLength: 2, threshold: 0.3
@@ -1694,9 +2553,11 @@ function refreshResults() {
     updateExclusionsCount();
     if (!document.getElementById("exclusions_menu").classList.contains("hidden")) renderExclusionsList();
 
+    ensureCourseColors(solverCourseCodes());   // courses added or starred = everything we colour
     renderCoursesList();
     renderStarredList();
     renderCalendar();
+    renderSolverCourses();
 
     // Wire up row + list buttons
     document.querySelectorAll(".add_course_btn, .remove_course_btn, .star_course_btn, .delete_course_btn").forEach(btn =>
@@ -1857,6 +2718,7 @@ function resultCellHtml(col, course, opts = {}) {
             <div class="flex items-center gap-1.5 min-w-0">
                 <div class="font-medium text-slate-800 dark:text-slate-100 leading-snug truncate">${escapeHtml(course["Title"] || "")}</div>
                 ${pinHtml}
+                ${tagBadgesHtml(course["_tags"])}
             </div>
             ${descLineHtml(course)}
         </td>`;
@@ -1962,9 +2824,13 @@ function renderGroupHeader(course, allSections, gid) {
     const allKeys = allSections.map(s => s["_key"]).join(",");
     const starred = allSections.some(s => config.favorites.includes(s["_key"]));
     const detail = course["details"] || "";
+    // Second line: the description if we have one, else the credit value. Never the section
+    // count — the "N sections" badge already shows it (that was the duplicate the header had).
+    const cr = course["Cr"];
     const descLine = detail
         ? `<div class="tip-trigger cursor-help text-xs text-slate-500 dark:text-slate-400 truncate leading-snug mt-0.5" data-tip="${escapeAttr(detail)}">${escapeHtml(detail)}</div>`
-        : `<div class="text-xs text-slate-400 dark:text-slate-500 mt-0.5">${escapeHtml(course["Cr"] || "—")} credits · ${allSections.length} sections offered</div>`;
+        : (cr ? `<div class="text-xs text-slate-400 dark:text-slate-500 mt-0.5">${escapeHtml(cr)} credits</div>` : "");
+    const tags = [...new Set(allSections.flatMap(s => Array.isArray(s["_tags"]) ? s["_tags"] : []))];
     const chevron = `<svg class="h-4 w-4 text-slate-400 transition-transform ${collapsed ? "-rotate-90" : ""}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>`;
     const tabBorder = collapsed ? "border-accent-500/40" : "border-accent-500";
     return `<tr class="wgroup-header" data-group-header="${gid}" data-course-code="${escapeAttr(course["Course"] || "")}">
@@ -1978,12 +2844,21 @@ function renderGroupHeader(course, allSections, gid) {
                         <span class="font-semibold text-sm text-slate-800 dark:text-slate-100 whitespace-nowrap">${escapeHtml(course["Course"] || "")}</span>
                         <span class="text-sm text-slate-600 dark:text-slate-300 truncate">${escapeHtml(course["Title"] || "")}</span>
                         <span class="text-[11px] font-medium text-accent-600 dark:text-accent-400 whitespace-nowrap shrink-0">${allSections.length} sections</span>
+                        ${tagBadgesHtml(tags)}
                     </div>
                     ${descLine}
                 </div>
             </div>
         </td>
     </tr>`;
+}
+
+// Course-attribute badges (Cross-Listed, Consent Required, Honors, …).
+function tagBadgesHtml(tags) {
+    if (!tags || !tags.length) return "";
+    return tags.map(t =>
+        `<span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap shrink-0 bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">${escapeHtml(t)}</span>`
+    ).join("");
 }
 
 // A merged section row (represents one or more identical sections).
@@ -2200,7 +3075,7 @@ function sectionRangeLabel(sectionCodes) {
 }
 
 function sectionRequirementForCourse(courseCode) {
-    if (config.l2_enabled !== true || !courseCode) return null;
+    if (!(currentSchema.caps && currentSchema.caps.sectionGroups) || !courseCode) return null;
     const sections = sectionsForCourse(courseCode);
     if (!sections.length) return null;
 
@@ -2644,14 +3519,63 @@ function calculateSchedule() {
 // Calendar
 // --------------------------------------------------------------------------
 
+// Colours are assigned from consecutive slots rather than hashed straight to a hue.
+// Hashing gave collisions constantly — with eight courses two would often land within
+// a few degrees of each other (and sometimes on the exact same hue). Walking the
+// golden angle over slots 0,1,2,... instead guarantees the courses actually on screen
+// get the most widely separated hues available for that many colours.
+const COURSE_HUE_STEP = 137.508;   // golden angle
+const COURSE_HUE_START = 205;
+let courseSlots = new Map();       // course code -> slot index
+
+// Slots are sticky: a course keeps its colour for as long as it stays in play, so
+// adding a class never repaints the ones already on the calendar. A fresh page load
+// starts from an empty map and assigns in sorted order, so a given set of courses
+// always opens with the same colours — but because removing a course leaves its slot
+// free rather than compacting, a session with a lot of add/remove churn can come back
+// with different colours after a reload. Stable while you work beats stable across
+// reloads here, since only the former is visible as flicker.
+function ensureCourseColors(codes) {
+    const wanted = new Set((codes || []).filter(Boolean));
+    for (const code of [...courseSlots.keys()]) {
+        if (!wanted.has(code)) courseSlots.delete(code);
+    }
+    const used = new Set(courseSlots.values());
+    const pending = [...wanted]
+        .filter(code => !courseSlots.has(code))
+        .sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: "base"}));
+    for (const code of pending) {
+        let slot = 0;
+        while (used.has(slot)) slot++;
+        courseSlots.set(code, slot);
+        used.add(slot);
+    }
+}
+
 function courseHue(courseCode) {
+    if (courseSlots.has(courseCode)) {
+        return (COURSE_HUE_START + courseSlots.get(courseCode) * COURSE_HUE_STEP) % 360;
+    }
+    // Not in the active set (e.g. a stray lookup) — fall back to a stable hash.
     let hash = 0;
     for (let i = 0; i < courseCode.length; i++) hash = (hash * 31 + courseCode.charCodeAt(i)) >>> 0;
     return hash % 360;
 }
 
+// Hue alone gets crowded past ~10 courses, so lightness is a second axis: slots are
+// banded in fives, and within any one band the hues are >=52 degrees apart. The first
+// band keeps the original 45% lightness, so a typical schedule looks unchanged.
+const COURSE_BAND = 5;
+const COURSE_LIGHTNESS = [45, 38, 52];
+
+function courseLightness(courseCode) {
+    const slot = courseSlots.get(courseCode);
+    if (slot === undefined) return COURSE_LIGHTNESS[0];
+    return COURSE_LIGHTNESS[Math.floor(slot / COURSE_BAND) % COURSE_LIGHTNESS.length];
+}
+
 function courseColor(courseCode) {
-    return `hsl(${courseHue(courseCode)} 62% 45%)`;
+    return `hsl(${courseHue(courseCode)} 62% ${courseLightness(courseCode)}%)`;
 }
 
 function renderCalendar() {

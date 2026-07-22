@@ -12,5 +12,11 @@
     "fall-2025": "classes/FIT/fall-2025.json",
     "spring-2026": "classes/FIT/spring-2026.json",
     "fall-2026": "classes/FIT/fall-2026.json"
+  },
+  "CWRU": {
+    "_format": "cwru",
+    "_prefix_names": "classes/CWRU/prefix_names.json",
+    "_prereqs": true,
+    "fall-2026": "classes/CWRU/fall-2026.json"
   }
 }

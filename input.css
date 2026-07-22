@@ -200,8 +200,35 @@
     animation: fadeSlideOut 0.18s ease forwards;
 }
 
+@keyframes modalBackdropIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes modalPanelIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .animate-pop, .animate-in, .animate-out { animation: none; }
+    #app_modal .modal-backdrop, #app_modal .modal-panel { animation: none; }
+}
+
+/* Modal dialog host — replaces window.confirm/prompt. Sits above the tooltip (60)
+   and section popover (65) so it is never occluded. */
+#app_modal {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+}
+
+#app_modal .modal-backdrop {
+    animation: modalBackdropIn 0.15s ease;
+}
+
+#app_modal .modal-panel {
+    animation: modalPanelIn 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
 /* Floating tooltip (JS-positioned, never clipped by table overflow) */

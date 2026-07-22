@@ -1,0 +1,608 @@
+{
+  "ACCM": {
+    "name": "Anesthesiology & Critical Care"
+  },
+  "ACCT": {
+    "name": "Accounting"
+  },
+  "AFST": {
+    "name": "Africana Studies"
+  },
+  "AIAE": {
+    "name": "Academic English"
+  },
+  "AIQS": {
+    "name": "Academic Inquiry Seminar"
+  },
+  "AKKD": {
+    "name": "Akkadian"
+  },
+  "ANAT": {
+    "name": "Anatomy"
+  },
+  "ANEE": {
+    "name": "Ancient Near East/Egyptian Std"
+  },
+  "ANES": {
+    "name": "Anesthesiology"
+  },
+  "ANTH": {
+    "name": "Anthropology"
+  },
+  "ARAB": {
+    "name": "Arabic"
+  },
+  "ARTH": {
+    "name": "Art History"
+  },
+  "ARTS": {
+    "name": "Art Studio"
+  },
+  "ASIA": {
+    "name": "Asian Studies"
+  },
+  "ASTR": {
+    "name": "Astronomy"
+  },
+  "BAFI": {
+    "name": "Banking & Finance"
+  },
+  "BASC": {
+    "name": "Basic Science Curriculum"
+  },
+  "BETH": {
+    "name": "Bioethics"
+  },
+  "BIOC": {
+    "name": "Biochemistry"
+  },
+  "BIOL": {
+    "name": "Biology"
+  },
+  "BLAW": {
+    "name": "Business Law"
+  },
+  "BSTP": {
+    "name": "Biomedical Sciences Train Prog"
+  },
+  "BTEC": {
+    "name": "Business Technology"
+  },
+  "BUAI": {
+    "name": "Business Analytics & Intel"
+  },
+  "CARD": {
+    "name": "Cardiology"
+  },
+  "CHEM": {
+    "name": "Chemistry"
+  },
+  "CHIN": {
+    "name": "Chinese"
+  },
+  "CHST": {
+    "name": "Childhood Studies"
+  },
+  "CLBY": {
+    "name": "Cell Biology"
+  },
+  "CLIN": {
+    "name": "Clinical Curriculum"
+  },
+  "CLSC": {
+    "name": "Classics"
+  },
+  "CMED": {
+    "name": "Clinical Medicine - CCLCM"
+  },
+  "CNCR": {
+    "name": "Cancer Center"
+  },
+  "COGS": {
+    "name": "Cognitive Science"
+  },
+  "COMP": {
+    "name": "Patient Based Clinicl Cmprhnsv"
+  },
+  "COOP": {
+    "name": "Cooperative Education"
+  },
+  "CORE": {
+    "name": "Core Clinical Medicine"
+  },
+  "COSI": {
+    "name": "Communication Sciences"
+  },
+  "CRSP": {
+    "name": "Clinical Research Scholars Prg"
+  },
+  "CSDS": {
+    "name": "Computer and Data Sciences"
+  },
+  "DANC": {
+    "name": "Dance"
+  },
+  "DBAP": {
+    "name": "Doctor of Business Admin"
+  },
+  "DENT": {
+    "name": "Dentistry"
+  },
+  "DERM": {
+    "name": "Dermatology"
+  },
+  "DESN": {
+    "name": "Design & Innovation"
+  },
+  "DNDO": {
+    "name": "Endodontics"
+  },
+  "DORL": {
+    "name": "Oral Medicine"
+  },
+  "DPED": {
+    "name": "Pediatric Dentistry"
+  },
+  "DPER": {
+    "name": "Periodontics"
+  },
+  "DPHC": {
+    "name": "Dental Public Health"
+  },
+  "DRTH": {
+    "name": "Orthodontics"
+  },
+  "DSCI": {
+    "name": "Applied Data Science"
+  },
+  "DSPR": {
+    "name": "Disease Processes"
+  },
+  "DSRE": {
+    "name": "Disease & Restoration of Hlth"
+  },
+  "EBME": {
+    "name": "Biomedical Engineering"
+  },
+  "ECHE": {
+    "name": "Chemical Engineering"
+  },
+  "ECIV": {
+    "name": "Civil Engineering"
+  },
+  "ECON": {
+    "name": "Economics"
+  },
+  "ECSE": {
+    "name": "Electr., Computer, Systems Eng"
+  },
+  "EDAB": {
+    "name": "Education Abroad"
+  },
+  "EDUC": {
+    "name": "Education"
+  },
+  "EEPS": {
+    "name": "Earth, Environ & Planetary Sci"
+  },
+  "EFDA": {
+    "name": "Expanded Function Dental Aux"
+  },
+  "EMAC": {
+    "name": "Macromolecular/Polymer Science"
+  },
+  "EMAE": {
+    "name": "Mechanical & Aerospace Engr"
+  },
+  "EMBA": {
+    "name": "Executive MBA"
+  },
+  "EMMD": {
+    "name": "Emergency Medicine"
+  },
+  "EMSE": {
+    "name": "Materials Science & Engineerng"
+  },
+  "ENDO": {
+    "name": "Endocrinology"
+  },
+  "ENGL": {
+    "name": "English"
+  },
+  "ENGR": {
+    "name": "Engineering Science"
+  },
+  "ENTP": {
+    "name": "Entrepreneurship"
+  },
+  "EPOM": {
+    "name": "Pract Oriented Engr Mast Prog"
+  },
+  "ESTD": {
+    "name": "Environmental Studies"
+  },
+  "ETHC": {
+    "name": "Ethics"
+  },
+  "ETHS": {
+    "name": "Ethnic Studies"
+  },
+  "EXAM": {
+    "name": "Examination Master/Ph.D."
+  },
+  "FAMD": {
+    "name": "Family Medicine"
+  },
+  "FNCE": {
+    "name": "Finance"
+  },
+  "FRCH": {
+    "name": "French"
+  },
+  "GAST": {
+    "name": "Gastroenterology"
+  },
+  "GENE": {
+    "name": "Genetics"
+  },
+  "GERI": {
+    "name": "Geriatric Medicine"
+  },
+  "GREK": {
+    "name": "Greek"
+  },
+  "GRMN": {
+    "name": "German"
+  },
+  "HBRW": {
+    "name": "Hebrew"
+  },
+  "HEMA": {
+    "name": "Hematology/Oncology"
+  },
+  "HEWB": {
+    "name": "Health & Well-Being"
+  },
+  "HLTH": {
+    "name": "Community Health"
+  },
+  "HPSC": {
+    "name": "History & Philosophy of Sci"
+  },
+  "HSMC": {
+    "name": "Health Systems Management"
+  },
+  "HSTY": {
+    "name": "History"
+  },
+  "HTEC": {
+    "name": "Humanity and Technology"
+  },
+  "HUMN": {
+    "name": "Humanities"
+  },
+  "HWDP": {
+    "name": "Health Disease and Processes"
+  },
+  "IBIS": {
+    "name": "Integrated Biological Sciences"
+  },
+  "IBMS": {
+    "name": "Integrated BioMedical Studies"
+  },
+  "IMED": {
+    "name": "Internal Medicine"
+  },
+  "IMMU": {
+    "name": "Immunology & Infectious Dis"
+  },
+  "INTH": {
+    "name": "International Health"
+  },
+  "INTL": {
+    "name": "International Studies"
+  },
+  "IQBP": {
+    "name": "Interschool Quant Biosci Pgm"
+  },
+  "ITAL": {
+    "name": "Italian"
+  },
+  "JAPN": {
+    "name": "Japanese"
+  },
+  "JWST": {
+    "name": "Jewish Studies"
+  },
+  "KORE": {
+    "name": "Korean"
+  },
+  "LATN": {
+    "name": "Latin"
+  },
+  "LAWS": {
+    "name": "Law"
+  },
+  "LDRS": {
+    "name": "Leadership"
+  },
+  "LEAP": {
+    "name": "Leadership Excel & Achieve"
+  },
+  "LEOC": {
+    "name": "Leadership & Org Change"
+  },
+  "LING": {
+    "name": "Linguistics"
+  },
+  "LSAB": {
+    "name": "Law School Study Abroad"
+  },
+  "MAHE": {
+    "name": "Maintenance of Health"
+  },
+  "MATH": {
+    "name": "Mathematics"
+  },
+  "MBAC": {
+    "name": "MBA Core"
+  },
+  "MBAP": {
+    "name": "Master of Business Admin"
+  },
+  "MBIO": {
+    "name": "Molecular Biol & Microbiology"
+  },
+  "MEDS": {
+    "name": "Medical Basic Science Curr"
+  },
+  "MGMT": {
+    "name": "Management"
+  },
+  "MGRD": {
+    "name": "Schl of Med Graduate Education"
+  },
+  "MIDS": {
+    "name": "Information Systems"
+  },
+  "MKMR": {
+    "name": "Marketing"
+  },
+  "MMED": {
+    "name": "Molecular Medicine"
+  },
+  "MPHP": {
+    "name": "Public Health"
+  },
+  "MSTP": {
+    "name": "Med Scientist Training Program"
+  },
+  "MUAP": {
+    "name": "Applied Music"
+  },
+  "MUAR": {
+    "name": "Music, Audio Recording"
+  },
+  "MUCP": {
+    "name": "Music, Composition"
+  },
+  "MUDE": {
+    "name": "Music, Dalcroze/Eurhythmics"
+  },
+  "MUED": {
+    "name": "Music, Education"
+  },
+  "MUEN": {
+    "name": "Music, Ensembles"
+  },
+  "MUGN": {
+    "name": "Music, General/Misc"
+  },
+  "MUHI": {
+    "name": "Music History"
+  },
+  "MULI": {
+    "name": "Music Literature"
+  },
+  "MUPD": {
+    "name": "Music, Pedagogy"
+  },
+  "MURP": {
+    "name": "Music, Repertoire"
+  },
+  "MUSP": {
+    "name": "Music, Secondary Performance"
+  },
+  "MUTH": {
+    "name": "Music Theory"
+  },
+  "MVIR": {
+    "name": "Molecular Virology Train Prog"
+  },
+  "NEUM": {
+    "name": "Neurological Medicine"
+  },
+  "NEUR": {
+    "name": "Neurosciences"
+  },
+  "NEUS": {
+    "name": "Neurosurgery"
+  },
+  "NTRN": {
+    "name": "Nutrition"
+  },
+  "NUAN": {
+    "name": "Nursing Anesthesiology"
+  },
+  "NUMN": {
+    "name": "Master of Nursing"
+  },
+  "NUND": {
+    "name": "Doctor of Nursing"
+  },
+  "NUNP": {
+    "name": "Nurse Practitioner"
+  },
+  "NURS": {
+    "name": "Nursing"
+  },
+  "OMFS": {
+    "name": "Oral & Maxillofacial Surgery"
+  },
+  "OPMT": {
+    "name": "Operations Management"
+  },
+  "OPRE": {
+    "name": "Operations Research"
+  },
+  "OPTH": {
+    "name": "Ophthalmology"
+  },
+  "ORBH": {
+    "name": "Organizational Behavior"
+  },
+  "ORIG": {
+    "name": "Origins"
+  },
+  "ORTH": {
+    "name": "Orthopaedic Surgery"
+  },
+  "OTOL": {
+    "name": "Otolaryngology"
+  },
+  "PAST": {
+    "name": "Physician Assistant Studies"
+  },
+  "PATH": {
+    "name": "Pathology"
+  },
+  "PEDS": {
+    "name": "Pediatrics"
+  },
+  "PHED": {
+    "name": "Physical Education"
+  },
+  "PHIL": {
+    "name": "Philosophy"
+  },
+  "PHOL": {
+    "name": "Physiology & Biophysics"
+  },
+  "PHRM": {
+    "name": "Pharmacology"
+  },
+  "PHYS": {
+    "name": "Physics"
+  },
+  "PLCY": {
+    "name": "Management Policy"
+  },
+  "PORT": {
+    "name": "Portuguese"
+  },
+  "POSC": {
+    "name": "Political Science"
+  },
+  "PQHS": {
+    "name": "Popn & Quant Health Sci"
+  },
+  "PRAC": {
+    "name": "Practicum"
+  },
+  "PSCL": {
+    "name": "Psychology"
+  },
+  "PSYY": {
+    "name": "Psychiatry"
+  },
+  "PULM": {
+    "name": "Pulmonary Medicine"
+  },
+  "RADI": {
+    "name": "Radiology"
+  },
+  "RAON": {
+    "name": "Radiation Oncology"
+  },
+  "RBIO": {
+    "name": "Reproductive Biology"
+  },
+  "REHA": {
+    "name": "Physical Medicine & Rehab"
+  },
+  "REHE": {
+    "name": "Restoration of Health"
+  },
+  "REMA": {
+    "name": "Restoration & Mainten of Hlth"
+  },
+  "RENL": {
+    "name": "Renal/Nephrology"
+  },
+  "RESC": {
+    "name": "Research Curriculum"
+  },
+  "RGME": {
+    "name": "Regenerative Med Entrprnrshp"
+  },
+  "RHEU": {
+    "name": "Clinical Rheumatology"
+  },
+  "RLGN": {
+    "name": "Religious Studies"
+  },
+  "RUSN": {
+    "name": "Russian"
+  },
+  "SASS": {
+    "name": "School of Applied Soc Sciences"
+  },
+  "SCMG": {
+    "name": "Supply Chain Management"
+  },
+  "SJUS": {
+    "name": "Social Justice"
+  },
+  "SOCI": {
+    "name": "Sociology"
+  },
+  "SPAN": {
+    "name": "Spanish"
+  },
+  "STAT": {
+    "name": "Statistics"
+  },
+  "SURG": {
+    "name": "Surgery"
+  },
+  "SYBB": {
+    "name": "Systems Biology and Bioinform"
+  },
+  "SYPS": {
+    "name": "Senior Year in Prof Studies"
+  },
+  "THTR": {
+    "name": "Theater Arts"
+  },
+  "UNEL": {
+    "name": "Unlisted Elective"
+  },
+  "UNIV": {
+    "name": "University Studies"
+  },
+  "UROL": {
+    "name": "Urology"
+  },
+  "VEAL": {
+    "name": "Veale Entrepreneurship Inst"
+  },
+  "WGST": {
+    "name": "Women's,Gndr&Sexuality Studies"
+  },
+  "WLIT": {
+    "name": "World Literature"
+  },
+  "WRIT": {
+    "name": "Writing and Rhetoric"
+  }
+}
